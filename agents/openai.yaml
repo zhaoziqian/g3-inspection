@@ -1,0 +1,4 @@
+interface:
+  display_name: "G3 Inspection"
+  short_description: "Create, generate, and email Trade System 2.0 weekly inspections"
+  default_prompt: "Use g3-inspection to run week-init, week-generate, or week-email for a Trade System 2.0 weekly inspection."

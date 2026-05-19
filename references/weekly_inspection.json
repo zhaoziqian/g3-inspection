@@ -1,0 +1,10 @@
+{
+  "project_name": "贸易系统2.0项目",
+  "ledger_url": "https://docs.qq.com/sheet/DWFF6dWJBWkJ1WnRi?tab=BB08J2",
+  "mail_html_name": "邮件内容.html",
+  "images": {
+    "applicant_change_count": "生产数据变更/data_analysis_charts/各申请人变更次数_{period}.png",
+    "reason_category": "生产数据变更/data_analysis_charts/申请原因分类_{period}.png",
+    "slow_service": "慢服务报告/慢服务分析图表_{period}.png"
+  }
+}
