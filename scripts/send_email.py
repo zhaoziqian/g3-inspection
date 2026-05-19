@@ -15,6 +15,9 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "references" / "email.json"
+
+
 def load_config(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -217,7 +220,7 @@ def add_attachments(msg, attachment_values, html_base_dir, period):
 
 def main():
     parser = argparse.ArgumentParser(description="发送周巡检 HTML 邮件")
-    parser.add_argument("--config", default="config/email.json", help="邮件配置文件路径")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="邮件配置文件路径")
     parser.add_argument("--html", required=True, help="邮件 HTML 正文文件路径")
     parser.add_argument("--dry-run", action="store_true", help="只检查邮件内容和附件，不实际发送")
     args = parser.parse_args()

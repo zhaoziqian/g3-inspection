@@ -27,33 +27,14 @@ At the start of any command, determine:
 
 ```bash
 WORKSPACE="$(pwd)"
+SKILL_DIR="/Users/zhaoziqian/.agents/skills/g3-inspection"
 ```
 
 All week-init, week-generate, and week-email operations must target `$WORKSPACE`.
 
-If `$WORKSPACE` already has `AGENTS.md`, `config/`, and `scripts/`, prefer those local files. If required files are missing, copy bundled resources from this skill into `$WORKSPACE`:
+Use the bundled scripts in `$SKILL_DIR/scripts/` directly. Do not copy `scripts/` or `config/` into `$WORKSPACE` just to run this skill. The bundled Python scripts default to `$SKILL_DIR/references/` for configuration.
 
-- `scripts/create_weekly_dir.sh`
-- `scripts/capture_slow_service_chart.py`
-- `scripts/create_mail_html.py`
-- `scripts/send_email.py`
-- `references/weekly_inspection.json` -> `config/weekly_inspection.json`
-- `references/email.json` -> `config/email.json`
-
-Use this copy pattern when bootstrapping a new workspace:
-
-```bash
-mkdir -p "$PWD/scripts" "$PWD/config"
-cp "$SKILL_DIR/scripts/create_weekly_dir.sh" "$PWD/scripts/"
-cp "$SKILL_DIR/scripts/capture_slow_service_chart.py" "$PWD/scripts/"
-cp "$SKILL_DIR/scripts/create_mail_html.py" "$PWD/scripts/"
-cp "$SKILL_DIR/scripts/send_email.py" "$PWD/scripts/"
-cp "$SKILL_DIR/references/weekly_inspection.json" "$PWD/config/weekly_inspection.json"
-cp "$SKILL_DIR/references/email.json" "$PWD/config/email.json"
-chmod +x "$PWD/scripts/"*
-```
-
-Replace `$SKILL_DIR` with the actual g3-inspection skill directory. Never replace `$PWD` with an old workspace path.
+Only use local workspace config when the user explicitly asks for a workspace-specific override, by passing `--config "$WORKSPACE/path/to/config.json"`.
 
 Weekly directory format:
 
@@ -71,16 +52,14 @@ The period is Monday through Sunday. If no period is specified, use the most rec
 Run from the current workspace. Always pass `--workspace "$PWD"` to prevent scripts from targeting the wrong directory:
 
 ```bash
-scripts/create_weekly_dir.sh --workspace "$PWD"
+"$SKILL_DIR/scripts/create_weekly_dir.sh" --workspace "$PWD"
 ```
 
 Or with an explicit period:
 
 ```bash
-scripts/create_weekly_dir.sh --workspace "$PWD" 20260511 20260517
+"$SKILL_DIR/scripts/create_weekly_dir.sh" --workspace "$PWD" 20260511 20260517
 ```
-
-If `scripts/create_weekly_dir.sh` does not exist in the current workspace, copy the bundled script to `$PWD/scripts/create_weekly_dir.sh` first, then run the local copy.
 
 The script must only create or complete missing fixed subdirectories. It must not overwrite existing user materials.
 
@@ -110,10 +89,10 @@ Generate one slow-service chart PNG from the slow-service HTML and place it unde
 慢服务报告/慢服务分析图表_{period}.png
 ```
 
-Use a local workspace method when present. Otherwise copy and run the bundled script:
+Use the bundled script:
 
 ```bash
-scripts/capture_slow_service_chart.py <period-dir>
+"$SKILL_DIR/scripts/capture_slow_service_chart.py" "$WORKSPACE/<period-dir>"
 ```
 
 This renders the HTML with headless Chrome and crops the main chart region. Verify the PNG exists and is not blank.
@@ -121,13 +100,13 @@ This renders the HTML with headless Chrome and crops the main chart region. Veri
 Generate email HTML:
 
 ```bash
-scripts/create_mail_html.py <period-dir>
+"$SKILL_DIR/scripts/create_mail_html.py" "$WORKSPACE/<period-dir>"
 ```
 
 Validate:
 
 ```bash
-scripts/send_email.py --html <period-dir>/邮件内容.html --dry-run
+"$SKILL_DIR/scripts/send_email.py" --html "$WORKSPACE/<period-dir>/邮件内容.html" --dry-run
 ```
 
 The dry run must report 3 inline images and the expected attachments.
@@ -139,7 +118,7 @@ Never send immediately.
 First run a dry run:
 
 ```bash
-scripts/send_email.py --html <period-dir>/邮件内容.html --dry-run
+"$SKILL_DIR/scripts/send_email.py" --html "$WORKSPACE/<period-dir>/邮件内容.html" --dry-run
 ```
 
 Then show the user these confirmation fields:
@@ -151,7 +130,7 @@ Then show the user these confirmation fields:
 Ask the user to confirm. Only after explicit user confirmation, send:
 
 ```bash
-scripts/send_email.py --html <period-dir>/邮件内容.html
+"$SKILL_DIR/scripts/send_email.py" --html "$WORKSPACE/<period-dir>/邮件内容.html"
 ```
 
 If the user requests `week-generate + week-email`, complete `week-generate`, run dry-run, show the confirmation fields, and stop until the user confirms.

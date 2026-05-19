@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 
 
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "references" / "weekly_inspection.json"
+
+
 def load_config(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -122,7 +125,7 @@ def build_html(project_name, period, ledger_url, images):
 def main():
     parser = argparse.ArgumentParser(description="生成周巡检邮件 HTML")
     parser.add_argument("period_dir", help="周巡检周期目录，例如 20260511-20260517")
-    parser.add_argument("--config", default="config/weekly_inspection.json", help="周巡检配置文件路径")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="周巡检配置文件路径")
     args = parser.parse_args()
 
     config = load_config(args.config)
