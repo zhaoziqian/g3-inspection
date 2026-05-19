@@ -10,7 +10,7 @@
     "password": "aaaaaaabbbbbbcccccc"
   },
   "message": {
-    "subject_template": "邮件主题{period}",
+    "subject_template": "贸易系统2.0项目{period}周巡检报告",
     "to": [
       "xxxx@163.com"
     ],
