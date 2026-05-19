@@ -1,0 +1,34 @@
+{
+  "smtp": {
+    "host": "xxx.xxx.com.cn",
+    "port": 465,
+    "ssl": true,
+    "ssl_verify": false
+  },
+  "account": {
+    "user": "xxxx@xxx.com.cn",
+    "password": "aaaaaaabbbbbbcccccc"
+  },
+  "message": {
+    "subject_template": "邮件主题{period}",
+    "to": [
+      "xxxx@163.com"
+    ],
+    "cc": [
+    ],
+    "attachments": [
+      {
+        "path": "慢服务报告/*.html",
+        "filename": "慢服务报告_{period}.html"
+      },
+      {
+        "path": "生产数据变更",
+        "archive": true,
+        "filename": "生产数据变更.zip"
+      },
+      {
+        "path": "数据库状态检查/*.xlsx"
+      }
+    ]
+  }
+}
