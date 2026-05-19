@@ -21,7 +21,17 @@ Use this skill to operate the Trade System 2.0 weekly inspection workflow.
 
 ## Workspace Contract
 
-Work in the user's current inspection workspace. If the workspace already has `AGENTS.md`, `config/`, and `scripts/`, prefer those local files. If required files are missing, copy bundled resources from this skill:
+Work only in the user's current workspace, meaning the shell `pwd` for the active task. Do not cd to, read from, or write to any previously used inspection workspace unless the user explicitly gives that path in the current request.
+
+At the start of any command, determine:
+
+```bash
+WORKSPACE="$(pwd)"
+```
+
+All week-init, week-generate, and week-email operations must target `$WORKSPACE`.
+
+If `$WORKSPACE` already has `AGENTS.md`, `config/`, and `scripts/`, prefer those local files. If required files are missing, copy bundled resources from this skill into `$WORKSPACE`:
 
 - `scripts/create_weekly_dir.sh`
 - `scripts/capture_slow_service_chart.py`
@@ -29,6 +39,21 @@ Work in the user's current inspection workspace. If the workspace already has `A
 - `scripts/send_email.py`
 - `references/weekly_inspection.json` -> `config/weekly_inspection.json`
 - `references/email.json` -> `config/email.json`
+
+Use this copy pattern when bootstrapping a new workspace:
+
+```bash
+mkdir -p "$PWD/scripts" "$PWD/config"
+cp "$SKILL_DIR/scripts/create_weekly_dir.sh" "$PWD/scripts/"
+cp "$SKILL_DIR/scripts/capture_slow_service_chart.py" "$PWD/scripts/"
+cp "$SKILL_DIR/scripts/create_mail_html.py" "$PWD/scripts/"
+cp "$SKILL_DIR/scripts/send_email.py" "$PWD/scripts/"
+cp "$SKILL_DIR/references/weekly_inspection.json" "$PWD/config/weekly_inspection.json"
+cp "$SKILL_DIR/references/email.json" "$PWD/config/email.json"
+chmod +x "$PWD/scripts/"*
+```
+
+Replace `$SKILL_DIR` with the actual g3-inspection skill directory. Never replace `$PWD` with an old workspace path.
 
 Weekly directory format:
 
@@ -43,17 +68,19 @@ The period is Monday through Sunday. If no period is specified, use the most rec
 
 ## week-init
 
-Run:
+Run from the current workspace. Always pass `--workspace "$PWD"` to prevent scripts from targeting the wrong directory:
 
 ```bash
-scripts/create_weekly_dir.sh
+scripts/create_weekly_dir.sh --workspace "$PWD"
 ```
 
 Or with an explicit period:
 
 ```bash
-scripts/create_weekly_dir.sh 20260511 20260517
+scripts/create_weekly_dir.sh --workspace "$PWD" 20260511 20260517
 ```
+
+If `scripts/create_weekly_dir.sh` does not exist in the current workspace, copy the bundled script to `$PWD/scripts/create_weekly_dir.sh` first, then run the local copy.
 
 The script must only create or complete missing fixed subdirectories. It must not overwrite existing user materials.
 

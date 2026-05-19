@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="${G3_INSPECTION_WORKSPACE:-$(pwd)}"
 SUB_DIRS=("慢服务报告" "生产数据变更" "数据库状态检查")
 
 usage() {
   cat <<'USAGE'
 用法:
-  scripts/create_weekly_dir.sh
-  scripts/create_weekly_dir.sh <开始日期> <结束日期>
+  scripts/create_weekly_dir.sh [--workspace <工作空间目录>]
+  scripts/create_weekly_dir.sh [--workspace <工作空间目录>] <开始日期> <结束日期>
 
 说明:
   - 无参数时，创建最近一个已结束的周巡检目录。
@@ -80,6 +80,13 @@ end = this_monday - datetime.timedelta(days=1)
 print(f"{start:%Y%m%d} {end:%Y%m%d}")
 PY
 }
+
+if [[ $# -ge 2 && "$1" == "--workspace" ]]; then
+  ROOT_DIR="$2"
+  shift 2
+fi
+
+ROOT_DIR="$(cd "$ROOT_DIR" && pwd)"
 
 if [[ $# -eq 0 ]]; then
   read -r start_date end_date < <(recent_range)
