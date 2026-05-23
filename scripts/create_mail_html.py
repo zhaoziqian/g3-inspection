@@ -106,6 +106,12 @@ def build_html(project_name, period, ledger_url, images):
       <img src="{images['slow_service']}" alt="慢服务分析图表">
     </div>
 
+    <h3>数据库状态检查（慢 SQL）</h3>
+    <p>图表1 慢 SQL 分析图表</p>
+    <div class="chart">
+      <img src="{images['slow_sql']}" alt="慢 SQL 分析图表">
+    </div>
+
     <p>具体信息请查看附件。</p>
 
     <p class="note">ps. 生产数据变更线上台账 <a class="link" href="{ledger_url}">{ledger_url}</a></p>

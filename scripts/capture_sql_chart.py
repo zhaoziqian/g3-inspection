@@ -7,10 +7,10 @@ from pathlib import Path
 DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
-def find_one_html(slow_dir):
-    files = sorted(slow_dir.glob("*.html"))
+def find_one_html(sql_dir):
+    files = sorted(sql_dir.glob("*.html"))
     if len(files) != 1:
-        raise SystemExit(f"慢服务报告目录必须有且只有 1 个 HTML 文件，当前 {len(files)} 个: {slow_dir}")
+        raise SystemExit(f"数据库状态检查目录必须有且只有 1 个 HTML 文件，当前 {len(files)} 个: {sql_dir}")
     return files[0]
 
 
@@ -26,7 +26,7 @@ def run(cmd):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="从慢服务 HTML 报告生成邮件用图表 PNG")
+    parser = argparse.ArgumentParser(description="从慢 SQL HTML 报告生成邮件用图表 PNG")
     parser.add_argument("period_dir", help="周巡检周期目录，例如 20260511-20260517")
     parser.add_argument("--chrome", default=DEFAULT_CHROME, help="Chrome 可执行文件路径")
     parser.add_argument("--width", type=int, default=1400, help="截图窗口宽度")
@@ -39,11 +39,11 @@ def main():
 
     period_dir = Path(args.period_dir).resolve()
     period = period_from_dir(period_dir)
-    slow_dir = period_dir / "慢服务报告"
-    html_path = find_one_html(slow_dir)
+    sql_dir = period_dir / "数据库状态检查"
+    html_path = find_one_html(sql_dir)
 
-    full_png = slow_dir / f"慢服务分析图表_{period}_full.png"
-    chart_png = slow_dir / f"慢服务分析图表_{period}.png"
+    full_png = sql_dir / f"慢SQL分析图表_{period}_full.png"
+    chart_png = sql_dir / f"慢SQL分析图表_{period}.png"
 
     run([
         args.chrome,
@@ -70,9 +70,9 @@ def main():
     ])
 
     if not chart_png.is_file() or chart_png.stat().st_size == 0:
-        raise SystemExit(f"慢服务图表 PNG 生成失败: {chart_png}")
+        raise SystemExit(f"慢 SQL 图表 PNG 生成失败: {chart_png}")
 
-    print(f"已生成慢服务图表: {chart_png}")
+    print(f"已生成慢 SQL 图表: {chart_png}")
 
 
 if __name__ == "__main__":

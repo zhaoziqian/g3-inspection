@@ -97,6 +97,20 @@ Use the bundled script:
 
 This renders the HTML with headless Chrome and crops the main chart region. Verify the PNG exists and is not blank.
 
+Generate one slow-SQL chart PNG from the SQL report HTML and place it under `数据库状态检查/`:
+
+```text
+数据库状态检查/慢SQL分析图表_{period}.png
+```
+
+Use the bundled script:
+
+```bash
+"$SKILL_DIR/scripts/capture_sql_chart.py" "$WORKSPACE/<period-dir>"
+```
+
+This uses the same HTML template (report mode, `tab:"sql"`) and identical crop parameters. Verify the PNG exists and is not blank.
+
 Generate email HTML:
 
 ```bash
@@ -109,7 +123,7 @@ Validate:
 "$SKILL_DIR/scripts/send_email.py" --html "$WORKSPACE/<period-dir>/邮件内容.html" --dry-run
 ```
 
-The dry run must report 3 inline images and the expected attachments.
+The dry run must report 4 inline images and the expected attachments.
 
 ## week-email
 
