@@ -13,10 +13,11 @@ g3-inspection/
 ├── SKILL.md                  # Skill 元数据与行为契约
 ├── agents/                   # 子 agent 定义
 ├── scripts/
-│   ├── create_weekly_dir.sh  # 创建周巡检目录
-│   ├── create_mail_html.py   # 生成邮件 HTML（内嵌图表）
+│   ├── create_weekly_dir.sh           # 创建周巡检目录
+│   ├── create_mail_html.py            # 生成邮件 HTML（内嵌图表）
 │   ├── capture_slow_service_chart.py  # 截取慢服务图表 PNG
-│   └── send_email.py         # 发送巡检邮件（支持 --dry-run）
+│   ├── capture_sql_chart.py           # 截取慢 SQL 图表 PNG
+│   └── send_email.py                  # 发送巡检邮件（支持 --dry-run）
 └── references/
     ├── email-template.json   # 邮件配置模板（入库）
     └── email.json            # 正式邮件配置，含账号密码（已排除入库）
@@ -51,13 +52,15 @@ g3-inspection/
 
 - `生产数据变更/生产数据变更记录.xlsx`
 - `慢服务报告/*.html`（慢服务报告，仅一份）
+- `数据库状态检查/*.html`（慢 SQL 报告，仅一份）
 - `数据库状态检查/*.xlsx`（至少一份）
 
 执行后生成：
 
-- `生产数据变更/data_analysis_charts/` — 数据变更分析图表 PNG
+- `生产数据变更/data_analysis_charts/` — 数据变更分析图表 PNG（2 张）
 - `慢服务报告/慢服务分析图表_{period}.png` — 慢服务图表截图
-- `邮件内容.html` — 内嵌图表的邮件正文
+- `数据库状态检查/慢SQL分析图表_{period}.png` — 慢 SQL 图表截图
+- `邮件内容.html` — 内嵌图表的邮件正文（含 4 张内联图表）
 
 ### 3. `week-email` — 发送巡检邮件
 
@@ -83,6 +86,6 @@ cp references/email-template.json references/email.json
 ## 依赖
 
 - Python 3
-- `playwright`（慢服务图表截图用）
 - `openpyxl`、`matplotlib`（数据变更图表用）
+- Google Chrome（headless 截图用，macOS 系统自带 `sips` 裁剪）
 - Claude Code（运行 Skill 的宿主环境）
