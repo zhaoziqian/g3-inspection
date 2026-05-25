@@ -69,6 +69,7 @@ Before generating, identify the period directory. Confirm these source inputs ex
 
 - `生产数据变更/生产数据变更记录.xlsx`
 - exactly one slow-service report HTML under `慢服务报告/`
+- exactly one slow-SQL report HTML under `数据库状态检查/`
 - at least one Excel file under `数据库状态检查/`
 
 Generate production data change charts by using `$g3-data-change-charts` against `生产数据变更/` with the period start and end dates:
@@ -165,6 +166,7 @@ Weekly attachments are fixed:
 
 - the only HTML under `慢服务报告/`, sent as `慢服务报告_{period}.html`;
 - the entire `生产数据变更/` directory, zipped as `生产数据变更.zip`;
+- the only HTML under `数据库状态检查/`, sent as `慢SQL报告_{period}.html`;
 - Excel files under `数据库状态检查/`, sent directly without zipping the directory.
 
 ## Safety

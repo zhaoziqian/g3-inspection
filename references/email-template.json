@@ -27,6 +27,10 @@
         "filename": "生产数据变更.zip"
       },
       {
+        "path": "数据库状态检查/*.html",
+        "filename": "慢SQL报告_{period}.html"
+      },
+      {
         "path": "数据库状态检查/*.xlsx"
       }
     ]
