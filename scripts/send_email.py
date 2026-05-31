@@ -10,6 +10,7 @@ import ssl
 import sys
 import tempfile
 import uuid
+import zipfile
 from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path
@@ -183,6 +184,19 @@ def normalize_attachment_spec(value, period):
     return spec
 
 
+def archive_html_attachment_specs(values):
+    specs = []
+    for value in values:
+        spec = {"path": value} if isinstance(value, str) else dict(value)
+        if str(spec.get("path", "")).lower().endswith(".html"):
+            spec["archive"] = True
+            filename = spec.get("filename")
+            if filename:
+                spec["filename"] = str(Path(filename).with_suffix(".zip"))
+        specs.append(spec)
+    return specs
+
+
 def add_attachments(msg, attachment_values, html_base_dir, period):
     temp_dirs = []
     attached = []
@@ -200,13 +214,18 @@ def add_attachments(msg, attachment_values, html_base_dir, period):
         for path in paths:
             if path.is_dir() and spec.get("archive") is False:
                 raise SystemExit(f"附件路径是目录，必须启用 archive: {path_value}")
-            if path.is_dir():
+            if path.is_dir() or spec.get("archive") is True:
                 temp_dir = tempfile.mkdtemp(prefix="weekly-mail-")
                 temp_dirs.append(temp_dir)
                 filename = spec.get("filename") or f"{path.name}.zip"
                 zip_stem = Path(filename).stem
                 zip_base = Path(temp_dir) / zip_stem
-                zip_path = Path(shutil.make_archive(str(zip_base), "zip", path))
+                if path.is_dir():
+                    zip_path = Path(shutil.make_archive(str(zip_base), "zip", path))
+                else:
+                    zip_path = zip_base.with_suffix(".zip")
+                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                        archive.write(path, arcname=path.name)
                 add_file_attachment(msg, zip_path, filename=filename)
                 attached.append(filename)
                 continue
@@ -223,6 +242,10 @@ def main():
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="邮件配置文件路径")
     parser.add_argument("--html", required=True, help="邮件 HTML 正文文件路径")
     parser.add_argument("--dry-run", action="store_true", help="只检查邮件内容和附件，不实际发送")
+    parser.add_argument("--timeout", type=int, default=30, help="SMTP 连接和写入超时秒数")
+    parser.add_argument("--to", action="append", dest="mail_to", help="覆盖收件人，可重复指定")
+    parser.add_argument("--no-cc", action="store_true", help="不发送抄送")
+    parser.add_argument("--archive-html-attachments", action="store_true", help="将 HTML 附件压缩为 ZIP")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -238,8 +261,8 @@ def main():
     smtp_user = account_config["user"]
     smtp_password = get_password(account_config)
 
-    mail_to = as_list(message_config.get("to"))
-    mail_cc = as_list(message_config.get("cc"))
+    mail_to = args.mail_to or as_list(message_config.get("to"))
+    mail_cc = [] if args.no_cc else as_list(message_config.get("cc"))
     if not mail_to:
         raise SystemExit("配置文件中 message.to 不能为空")
 
@@ -260,9 +283,12 @@ def main():
     msg.add_alternative(html_body, subtype="html")
     html_part = msg.get_payload()[-1]
     attach_inline_images(html_part, images)
+    attachment_values = as_list(message_config.get("attachments"))
+    if args.archive_html_attachments:
+        attachment_values = archive_html_attachment_specs(attachment_values)
     attached_files, temp_dirs = add_attachments(
         msg,
-        as_list(message_config.get("attachments")),
+        attachment_values,
         html_base_dir,
         period,
     )
@@ -282,11 +308,11 @@ def main():
 
         if smtp_ssl:
             context = ssl.create_default_context() if ssl_verify else ssl._create_unverified_context()
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=30) as smtp:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=args.timeout) as smtp:
                 smtp.login(smtp_user, smtp_password)
                 smtp.send_message(msg, to_addrs=recipients)
         else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as smtp:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=args.timeout) as smtp:
                 smtp.login(smtp_user, smtp_password)
                 smtp.send_message(msg, to_addrs=recipients)
 
