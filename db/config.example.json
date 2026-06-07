@@ -1,0 +1,8 @@
+{
+  "host": "10.x.x.x",
+  "port": 8000,
+  "user": "your_db_user",
+  "password": "your_db_password",
+  "database": "your_database",
+  "sslmode": "require"
+}

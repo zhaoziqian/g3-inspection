@@ -31,7 +31,8 @@
         "filename": "慢SQL报告_{period}.html"
       },
       {
-        "path": "数据库状态检查/*.xlsx"
+        "path": "数据库状态检查/数据库巡检_*.md",
+        "filename": "数据库巡检报告_{period}.md"
       }
     ]
   }

@@ -1,5 +1,8 @@
 # 正式邮件配置（含真实账号密码，不入库）
 references/email.json
 
+# 数据库连接配置（含真实账号密码，不入库；使用 db/config.example.json 作为模板）
+db/config.json
+
 # 工作空间本地配置
 .claude/
