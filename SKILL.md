@@ -3,9 +3,10 @@ name: g3-inspection
 description: >
   Trade System 2.0 weekly inspection workflow automation. Use when the user mentions
   g3 inspection, 贸易系统2.0巡检, 周巡检, week-init, week-generate, week-email,
-  week-db-inspect, 数据库巡检, creating weekly inspection directories, generating
-  weekly inspection email HTML, generating inspection email assets, or sending weekly
-  inspection emails with inline images and attachments.
+  week-db-inspect, 数据库巡检, week-tencent-upload, 腾讯文档上传, 慢服务上传, 慢SQL上传,
+  creating weekly inspection directories, generating weekly inspection email HTML,
+  generating inspection email assets, or sending weekly inspection emails with
+  inline images and attachments.
 ---
 
 # G3 Inspection
@@ -15,6 +16,7 @@ Use this skill to operate the Trade System 2.0 weekly inspection workflow.
 ## Supported Commands
 
 - `week-init`: create or complete the weekly inspection directory.
+- `week-tencent-upload`: upload slow-service and slow-SQL scan reports to Tencent Docs.
 - `week-generate`: generate inspection assets and `邮件内容.html`.
 - `week-email`: send the weekly inspection email.
 - `week-generate + week-email`: run generation first, then prepare email sending. Still require user confirmation before sending.
@@ -306,6 +308,62 @@ Highlight rows where the weekly increase > 5 GB with **bold** on the 变化 colu
 - `duration` / `xact_duration` fields: add a one-line note that format is `{microseconds days months finite}` before the analysis bullets of that section.
 - Analysis bullets: focus on actionable findings. If nothing is wrong, write only "无异常。"
 - Do not invent data or interpolate missing fields.
+
+## week-tencent-upload
+
+Uploads weekly slow-service and slow-SQL scan report CSVs to the shared Tencent Docs workbook.
+
+### Prerequisites
+
+Source CSV files must already exist in the period directory:
+
+```
+<period_dir>/慢服务报告/slow_analysis_*.csv
+<period_dir>/数据库状态检查/sql_analysis_*.csv
+```
+
+### Run
+
+```bash
+python3 "$SKILL_DIR/scripts/tencent_upload_scan_reports.py" "$WORKSPACE/<period_dir>"
+```
+
+### What the script does
+
+| Step | 操作 | 说明 |
+|------|------|------|
+| 1 | 检查已有 sheet | 如果同名 sheet 已存在则跳过创建 |
+| 2 | 创建两个新 sheet | `慢服务MMDD-MMDD`（index=1）和 `慢SQLMMDD-MMDD`（index=2），排在目录之后、其余 sheet 之前 |
+| 3 | 更新目录 sheet | 在下一个空行写入周期（M列）+ 两个带跳转超链接的 sheet 名称（N、O列）；链接格式：`https://docs.qq.com/sheet/DWHBzb1ZFZWhFREZa?tab={sheet_id}`，`sheet_id` 来自步骤 2 的 `add_sheet` 返回值 |
+| 4 | 写入慢服务数据 | 表头（蓝色加粗，背景 `#8CDDFA`）+ 全量数据行，分批 30 行写入 |
+| 5 | 写入慢SQL表头 | 仅写标题行（同样式），数据列含 `SQL语句` 需用户手动粘贴（API 被 WAF 拦截 SQL 关键词） |
+| 6 | 打印操作说明 | 输出腾讯文档跳转链接、粘贴位置、列顺序说明 |
+
+### Column definitions
+
+**慢服务 sheet（11列）：**
+```
+时间窗口开始 | 时间窗口结束 | 应用英文名 | 服务名 | 平均耗时(ms) | 调用次数 | 链路详情 | 责任人 | 处置状态 | 处置方案 | 备注（原因）
+```
+
+**慢SQL sheet（11列）：**
+```
+时间窗口开始 | 时间窗口结束 | 应用英文名 | SQL名 | SQL语句 | 耗时(ms) | 链路详情 | 责任人 | 处置状态 | 处置方案 | 备注（原因）
+```
+
+> `链路详情` 列为 2026-06-07 本周新增，与之前格式相比多一列。
+
+### Known limitation: WAF blocks SQL statement upload
+
+The Tencent Docs API endpoint (`https://docs.qq.com/api/v6/sheet/mcp`) is protected by WAF that detects SQL keywords (`SELECT`, `FROM`, `WHERE`, etc.) in the request body and returns HTTP 501. This blocks programmatic upload of the `SQL语句` column content. The column header and all other columns upload without issue. The `SQL语句` column must be pasted manually via the Tencent Docs web UI.
+
+### Tencent Docs target
+
+```
+File ID:  DWHBzb1ZFZWhFREZa
+File URL: https://docs.qq.com/sheet/DWHBzb1ZFZWhFREZa
+目录 sheet ID: BB08J2
+```
 
 ## Safety
 
