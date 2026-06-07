@@ -242,7 +242,7 @@ def main():
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="邮件配置文件路径")
     parser.add_argument("--html", required=True, help="邮件 HTML 正文文件路径")
     parser.add_argument("--dry-run", action="store_true", help="只检查邮件内容和附件，不实际发送")
-    parser.add_argument("--timeout", type=int, default=30, help="SMTP 连接和写入超时秒数")
+    parser.add_argument("--timeout", type=int, default=120, help="SMTP 连接和写入超时秒数")
     parser.add_argument("--to", action="append", dest="mail_to", help="覆盖收件人，可重复指定")
     parser.add_argument("--no-cc", action="store_true", help="不发送抄送")
     parser.add_argument("--archive-html-attachments", action="store_true", help="将 HTML 附件压缩为 ZIP")
