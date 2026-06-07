@@ -121,7 +121,7 @@ def build_html(project_name, period, ledger_url, images):
       <li>生产数据变更（zip 压缩包）</li>
       <li>慢服务报告 HTML（慢服务报告_{period}.html）</li>
       <li>慢 SQL 报告 HTML（慢SQL报告_{period}.html）</li>
-      <li>数据库状态检查 Excel 文件</li>
+      <li>数据库巡检报告 MD（数据库巡检报告_{period}.md）</li>
     </ul>
   </div>
 </body>
