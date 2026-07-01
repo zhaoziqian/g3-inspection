@@ -31,6 +31,7 @@ g3-inspection/
 │   ├── create_mail_html.py            # 生成邮件 HTML（内嵌图表）
 │   ├── capture_slow_service_chart.py  # 截取慢服务图表 PNG
 │   ├── capture_sql_chart.py           # 截取慢 SQL 图表 PNG
+│   ├── create_issue_type_pie_chart.py # 生成问题类型分布环形饼图 PNG
 │   └── send_email.py                  # 发送巡检邮件（支持 --dry-run）
 └── references/
     ├── email-template.json   # 邮件配置模板（入库）
@@ -119,6 +120,31 @@ Skill 会先执行 dry-run，展示收件人、抄送、邮件主题供确认，
 | 慢 SQL 报告 HTML | `数据库状态检查/*.html` | `慢SQL报告_{period}.html` |
 | 生产数据变更 | `生产数据变更/` 目录 | `生产数据变更.zip` |
 | 数据库状态检查 Excel | `数据库状态检查/*.xlsx` | 原文件名 |
+
+### 5. `issue-pie-chart` — 生成问题类型分布饼图
+
+使用默认 5 项问题类型数据，在 `慢服务\SQL/<MMDD-MMDD>/` 横向对比周期目录生成透明背景环形饼图：
+
+```bash
+/g3-inspection issue-pie-chart
+```
+
+默认输出：
+
+```
+慢服务\SQL/0615-0621/问题类型分布饼图_0615-0621.png
+```
+
+也可以传入自定义数据：
+
+```bash
+"$SKILL_DIR/scripts/create_issue_type_pie_chart.py" "$WORKSPACE"/'慢服务\SQL'/"0615-0621" \
+  --item "程序健壮性=30" \
+  --item "程序设计漏洞=18" \
+  --item "设计交互优化=66" \
+  --item "需求更改=7" \
+  --item "业务逻辑问题=23"
+```
 
 ---
 

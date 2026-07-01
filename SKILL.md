@@ -21,6 +21,7 @@ Use this skill to operate the Trade System 2.0 weekly inspection workflow.
 - `week-email`: send the weekly inspection email.
 - `week-generate + week-email`: run generation first, then prepare email sending. Still require user confirmation before sending.
 - `week-db-inspect`: run database inspection queries and generate the markdown report into the current week's `数据库状态检查/` directory.
+- `issue-pie-chart`: generate a donut pie chart PNG for issue type distribution under the slow-service/slow-SQL weekly comparison directory.
 
 ## Workspace Contract
 
@@ -152,6 +153,49 @@ Ask the user to confirm. Only after explicit user confirmation, send:
 ```
 
 If the user requests `week-generate + week-email`, complete `week-generate`, run dry-run, show the confirmation fields, and stop until the user confirms.
+
+## issue-pie-chart
+
+Generates a transparent-background donut pie chart for issue type distribution under the slow-service/slow-SQL weekly comparison directory.
+
+This chart belongs to the `慢服务\SQL/<MMDD-MMDD>/` directory dimension, the same place used by `慢服务 / 慢SQL 周度横向对比` assets. Do not place it at the weekly inspection period root unless the user explicitly asks for that output path.
+
+Default data:
+
+| 类型 | 数量 |
+|------|------|
+| 程序健壮性 | 30 |
+| 程序设计漏洞 | 18 |
+| 设计交互优化 | 66 |
+| 需求更改 | 7 |
+| 业务逻辑问题 | 23 |
+
+Run with default data and place the PNG in the slow-service/slow-SQL weekly comparison period directory:
+
+```bash
+"$SKILL_DIR/scripts/create_issue_type_pie_chart.py" "$WORKSPACE"/'慢服务\SQL'/"<MMDD-MMDD>"
+```
+
+Expected output:
+
+```text
+慢服务\SQL/<MMDD-MMDD>/问题类型分布饼图_<MMDD-MMDD>.png
+```
+
+The PNG background must be transparent so it can be placed on the slow-service/slow-SQL weekly comparison report canvas.
+
+Run with custom data:
+
+```bash
+"$SKILL_DIR/scripts/create_issue_type_pie_chart.py" "$WORKSPACE"/'慢服务\SQL'/"<MMDD-MMDD>" \
+  --item "程序健壮性=30" \
+  --item "程序设计漏洞=18" \
+  --item "设计交互优化=66" \
+  --item "需求更改=7" \
+  --item "业务逻辑问题=23"
+```
+
+Use `--output` when the user asks for a specific PNG path. Verify the generated PNG exists and is not blank.
 
 ## Email Rules
 
