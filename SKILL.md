@@ -22,6 +22,7 @@ Use this skill to operate the Trade System 2.0 weekly inspection workflow.
 - `week-generate + week-email`: run generation first, then prepare email sending. Still require user confirmation before sending.
 - `week-db-inspect`: run database inspection queries and generate the markdown report into the current week's `数据库状态检查/` directory.
 - `issue-pie-chart`: generate a donut pie chart PNG for issue type distribution under the slow-service/slow-SQL weekly comparison directory.
+- `week-owner-backfill`: maintain slow-service/slow-SQL owner mappings and backfill blank owners in Tencent Docs.
 
 ## Workspace Contract
 
@@ -408,6 +409,68 @@ File ID:  DWHBzb1ZFZWhFREZa
 File URL: https://docs.qq.com/sheet/DWHBzb1ZFZWhFREZa
 目录 sheet ID: BB08J2
 ```
+
+## week-owner-backfill
+
+Maintains a reusable owner mapping for weekly slow-service and slow-SQL scans, then backfills blank owner cells in Tencent Docs.
+
+Owner config:
+
+```text
+$SKILL_DIR/references/scan_owner_map.json
+```
+
+The JSON stores two independent maps:
+
+```json
+{
+  "slow_service": {
+    "<服务名>": "<责任人>"
+  },
+  "slow_sql": {
+    "<SQL名>": "<责任人>"
+  },
+  "metadata": {}
+}
+```
+
+### One-time initialization
+
+Run this once to build the config from all existing historical slow-service and slow-SQL sheets. Newer sheets take precedence over older sheets for the same item.
+
+```bash
+python3 "$SKILL_DIR/scripts/backfill_scan_owners.py" --init-config
+```
+
+### Weekly owner update and backfill
+
+After the current week's slow-service and slow-SQL sheets exist, and after the user manually pastes slow-SQL data if needed, run:
+
+```bash
+python3 "$SKILL_DIR/scripts/backfill_scan_owners.py" --period <MMDD-MMDD> --update-from-previous --backfill
+```
+
+Example:
+
+```bash
+python3 "$SKILL_DIR/scripts/backfill_scan_owners.py" --period 0629-0705 --update-from-previous --backfill
+```
+
+This workflow:
+
+1. Reads the immediately previous period's slow-service and slow-SQL sheets.
+2. Updates `scan_owner_map.json` with any non-empty owner values from that previous period.
+3. Reads only the current period's name column (`服务名` or `SQL名`) and `责任人` column.
+4. Fills current blank `责任人` cells from the config.
+
+Rules:
+
+- Never overwrite current-period non-empty owner cells.
+- Keep slow-service and slow-SQL mappings separate.
+- Locate `服务名` / `SQL名` and `责任人` by header text; do not hard-code column letters.
+- For slow-SQL, do not read or write the `SQL语句` column. The backfill only needs `SQL名` and `责任人`.
+- If a current item is not in the config, leave its owner blank and report the unmatched count.
+- Use `--dry-run` to inspect counts without writing Tencent Docs.
 
 ## Safety
 
