@@ -14,6 +14,7 @@ week-tencent-upload: 将周巡检慢服务/慢SQL扫描报告上传到腾讯文�
   # period_dir 示例：/path/to/20260601-20260607
 """
 import csv
+import io
 import json
 import os
 import re
@@ -144,23 +145,39 @@ def sheet_has_data(sheet_id):
     return len(lines) > 0, len(lines)
 
 
+def choose_directory_row(period_short, period_cells, start_row=1):
+    """已存在周期复用原行；新周期追加到最后一个非空周期之后。"""
+    normalized = [str(value).strip() for value in period_cells]
+    for offset, value in enumerate(normalized):
+        if value == period_short:
+            return start_row + offset, True
+    occupied = [offset for offset, value in enumerate(normalized) if value]
+    if not occupied:
+        return start_row, False
+    return start_row + occupied[-1] + 1, False
+
+
 def find_dir_row(period_short):
-    """在目录 sheet 中查找周期行；已存在返回行号，否则返回下一个空行号。"""
+    """在目录 sheet 中查找周期行；新周期不复用历史空洞。"""
+    info = sheetengine("get_sheet_info", {"file_id": TENCENT_FILE_ID})
+    directory = next(
+        (sheet for sheet in info.get("sheets", []) if sheet.get("sheet_id") == DIRECTORY_SHEET_ID),
+        None,
+    )
+    if not directory:
+        print(f"错误：找不到目录 sheet: {DIRECTORY_SHEET_ID}", file=sys.stderr)
+        sys.exit(1)
+    end_row = max(int(directory.get("row_count", 1)) - 1, 1)
     data = sheetengine("get_cell_data", {
         "file_id": TENCENT_FILE_ID,
         "sheet_id": DIRECTORY_SHEET_ID,
         "start_row": 1, "start_col": DIR_COL_PERIOD,
-        "end_row": 20, "end_col": DIR_COL_PERIOD,
+        "end_row": end_row, "end_col": DIR_COL_PERIOD,
         "return_csv": True
     })
-    lines = data["csv_data"].strip().split("\n")
-    for i, line in enumerate(lines):
-        val = line.strip().strip(",")
-        if val == period_short:
-            return 1 + i, True   # (row, already_exists)
-        if not val:
-            return 1 + i, False  # 第一个空行
-    return 1 + len(lines), False
+    rows = list(csv.reader(io.StringIO(data.get("csv_data", ""))))
+    values = [row[0] if row else "" for row in rows]
+    return choose_directory_row(period_short, values, start_row=1)
 
 
 def confirm_overwrite(label):
