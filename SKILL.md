@@ -3,7 +3,8 @@ name: g3-inspection
 description: >
   Use when the user mentions g3 inspection, 贸易系统2.0巡检, 周巡检, week-init,
   week-generate, week-email, week-db-inspect, week-tencent-upload, week-tencent-summary,
-  腾讯文档上传, 慢服务汇总, 慢SQL汇总, 数据库巡检, 或巡检邮件。
+  week-tencent-archive, 腾讯文档上传, 慢服务汇总, 慢SQL汇总, 慢服务归档,
+  慢SQL归档, 数据库巡检, 或巡检邮件。
 ---
 
 # G3 Inspection
@@ -15,6 +16,7 @@ Use this skill to operate the Trade System 2.0 weekly inspection workflow.
 - `week-init`: create or complete the weekly inspection directory.
 - `week-tencent-upload`: upload slow-service and slow-SQL scan reports to Tencent Docs.
 - `week-tencent-summary`: refresh the two long-term scan summary sheets after current-week detail data is complete.
+- `week-tencent-archive`: archive weekly detail sheets older than the latest five weeks, then safely retire their source sheets and directory entries.
 - `week-generate`: generate inspection assets and `邮件内容.html`.
 - `week-email`: send the weekly inspection email.
 - `week-generate + week-email`: run generation first, then prepare email sending. Still require user confirmation before sending.
@@ -511,6 +513,47 @@ Update contract:
 - Never read or write the slow-SQL `SQL语句` column.
 - Summary history is retained permanently. Do not delete older period columns here.
 - Apply re-reads both summary sheets and verifies the period, fixed fields, history, and weekly values. If one Tencent API call fails midway, correct the cause and rerun the same period; the command reuses that period column instead of adding another one.
+
+## week-tencent-archive
+
+Archives full raw detail from old weekly sheets into `慢服务归档` (`7i67j3`) and `慢SQL归档` (`8i29ez`). Keep the latest five paired weekly periods as standalone sheets.
+
+Run only after the current-week summary update is complete:
+
+```text
+week-tencent-upload
+→ manually paste the current slow-SQL rows
+→ week-owner-backfill
+→ week-tencent-summary dry-run
+→ week-tencent-summary apply
+→ week-tencent-archive dry-run
+→ week-tencent-archive apply
+```
+
+Preview first:
+
+```bash
+python3 "$SKILL_DIR/scripts/tencent_archive_scan_reports.py"
+```
+
+Review the archive periods, source row counts, period actions, exact source Sheet names, and directory rows. Then apply:
+
+```bash
+python3 "$SKILL_DIR/scripts/tencent_archive_scan_reports.py" --apply
+```
+
+Archive contract:
+
+- Only exact `慢服务MMDD-MMDD` and `慢SQLMMDD-MMDD` names participate. Sheets containing `作废`, `汇总`, or `归档` are excluded.
+- A period must have both weekly source types before it first enters the archive candidate set.
+- The archive keeps every original detail row, adds `周期` as column A, maps by header text, and leaves historical missing `链路详情` blank.
+- Slow-SQL text is read in adaptive chunks and written with UTF-8 base64. An unreadable single row stops the command.
+- The command writes both archive sheets and re-reads every full row before deleting any source Sheet.
+- Source deletion starts only after both archives pass row-count and SHA-256 content verification.
+- After both source Sheets are confirmed absent, directory cleanup clears only M:O and the N/O links. A:L and P:Z are snapshotted and verified unchanged.
+- `慢SQL0525-0531（作废）` and all noncanonical sheets are never deleted.
+- The command is idempotent. Exact archive blocks are skipped; interrupted source deletion can resume when both verified archive blocks remain.
+- Default mode is dry-run. Never add `--apply` until the preview is clean.
 
 ## Safety
 

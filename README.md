@@ -2,7 +2,7 @@
 
 贸易系统 2.0 **周巡检工作流自动化** Claude Code Skill。
 
-多条指令覆盖从目录初始化、数据库巡检、资产生成、腾讯文档汇总到邮件发送的全流程。
+多条指令覆盖从目录初始化、数据库巡检、资产生成、腾讯文档汇总与归档到邮件发送的全流程。
 
 ---
 
@@ -32,7 +32,9 @@ g3-inspection/
 │   ├── capture_slow_service_chart.py  # 截取慢服务图表 PNG
 │   ├── capture_sql_chart.py           # 截取慢 SQL 图表 PNG
 │   ├── create_issue_type_pie_chart.py # 生成问题类型分布环形饼图 PNG
+│   ├── scan_archive.py                # 周明细归档选择、标准化与哈希校验
 │   ├── scan_summary.py                # 周汇总聚合与更新计划
+│   ├── tencent_archive_scan_reports.py # 归档并安全清理旧周 Sheet
 │   ├── tencent_refresh_scan_summary.py # 更新腾讯文档慢服务/慢SQL汇总
 │   └── send_email.py                  # 发送巡检邮件（支持 --dry-run）
 └── references/
@@ -170,11 +172,31 @@ week-tencent-upload
 → week-owner-backfill
 → week-tencent-summary dry-run
 → week-tencent-summary apply
+→ week-tencent-archive dry-run
+→ week-tencent-archive apply
 ```
 
 目标页：`慢服务汇总` (`z776s9`)、`慢SQL汇总` (`cczg56`)。新周期插入 G 列；已有项只更新周值，不改 A-F 固定字段；新项追加到底部。慢服务周值为“最大平均耗时 / 调用次数合计”，慢SQL为“最大耗时 / 出现次数”。
 
 当周明细为空时默认停止，防止忘记粘贴慢SQL；只有确认本周确实零记录时才使用 `--allow-empty`。`--apply` 后会回读校验。如接口中途失败，处理原因后重跑同一周期即可，脚本不会重复新增周期列。
+
+---
+
+### 7. `week-tencent-archive` — 归档旧周明细
+
+汇总更新完成后执行。默认仅预览：
+
+```bash
+python3 "$SKILL_DIR/scripts/tencent_archive_scan_reports.py"
+python3 "$SKILL_DIR/scripts/tencent_archive_scan_reports.py" --apply
+```
+
+- `慢服务归档` (`7i67j3`) 与 `慢SQL归档` (`8i29ez`) 保留完整原始明细，首列增加“周期”。
+- 文档只保留最新 5 对规范周 Sheet；作废页、汇总页、归档页和其他 Sheet 不参与。
+- 慢 SQL 长文本自适应分块读取，并以 base64 写入；单行无法完整读取时停止。
+- 两个归档页全部回读校验成功后，才删除对应源 Sheet。
+- 确认双源 Sheet 消失后，只清目录同行 M:O 及 N/O 链接；A:L、P:Z 必须保持不变。
+- 命令可重跑：一致的周期块不会重复追加，中途删除失败可从已验证归档块恢复。
 
 ---
 
