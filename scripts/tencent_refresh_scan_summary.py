@@ -177,6 +177,11 @@ def verify_applied_update(
 
     before_width = len(before[0])
     after_width = len(after[0])
+    expected_rows = len(before) + len(plan.append_rows)
+    if len(after) != expected_rows:
+        raise SummaryUpdateError(
+            f"写后校验失败：数据行数期望 {expected_rows - 1}，实际 {len(after) - 1}"
+        )
     for row_index in range(1, len(before)):
         old = _padded(before[row_index], before_width)
         new = _padded(after[row_index] if row_index < len(after) else [], after_width)
@@ -189,6 +194,18 @@ def verify_applied_update(
             preserved[plan.period_col] = old[plan.period_col]
         if _padded(preserved, before_width) != old:
             raise SummaryUpdateError(f"写后校验失败：第 {row_index + 1} 行历史数据发生变化")
+        expected_weekly = plan.value_updates.get((row_index, plan.period_col), "")
+        actual_weekly = new[plan.period_col] if plan.period_col < len(new) else ""
+        if actual_weekly != expected_weekly:
+            raise SummaryUpdateError(
+                f"写后校验失败：第 {row_index + 1} 行本周值期望 {expected_weekly!r}，实际 {actual_weekly!r}"
+            )
+
+    for offset, expected in enumerate(plan.append_rows):
+        row_index = len(before) + offset
+        actual = _padded(after[row_index], after_width)
+        if actual != _padded(expected, after_width):
+            raise SummaryUpdateError(f"写后校验失败：第 {row_index + 1} 行新增行内容不匹配")
 
     for (row_index, col_index), expected in plan.value_updates.items():
         actual_row = after[row_index] if row_index < len(after) else []

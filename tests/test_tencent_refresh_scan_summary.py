@@ -136,6 +136,29 @@ class TencentSummaryApplyTests(unittest.TestCase):
 
         verify_applied_update(before, after, plan)
 
+    def test_verification_rejects_missing_fixed_fields_on_appended_row(self):
+        before = [[*FIXED_HEADERS["slow_service"], "0817-0823"]]
+        current = [{"应用英文名": "app-a", "服务名": "S.query", "平均耗时(ms)": "300", "调用次数": "2", "责任人": "张三"}]
+        plan = plan_summary_update("slow_service", "0824-0830", current, before)
+        after = [
+            [*FIXED_HEADERS["slow_service"], "0824-0830", "0817-0823"],
+            ["", "", "", "", "", "", "300 / 2", ""],
+        ]
+
+        with self.assertRaisesRegex(Exception, "新增行"):
+            verify_applied_update(before, after, plan)
+
+    def test_verification_rejects_stale_value_for_key_absent_on_rerun(self):
+        before = [
+            [*FIXED_HEADERS["slow_service"], "0824-0830", "0817-0823"],
+            ["app-a", "S.query", "张三", "待处理", "", "", "300 / 2", "100 / 1"],
+        ]
+        plan = plan_summary_update("slow_service", "0824-0830", [], before)
+        after = [row[:] for row in before]
+
+        with self.assertRaisesRegex(Exception, "本周值"):
+            verify_applied_update(before, after, plan)
+
 
 class TencentSummaryCliTests(unittest.TestCase):
     def test_absolute_script_path_runs_outside_skill_repository(self):

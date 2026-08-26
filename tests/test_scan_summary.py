@@ -54,6 +54,12 @@ class ScanSummaryAggregationTests(unittest.TestCase):
 
         self.assertEqual(item.value, "500 / 2")
 
+    def test_non_finite_latency_is_rejected(self):
+        rows = [{"应用英文名": "app-a", "SQL名": "M.query", "耗时(ms)": "NaN"}]
+
+        with self.assertRaisesRegex(SummaryUpdateError, "不是有限数"):
+            aggregate_current_week("slow_sql", rows)
+
 
 class ScanSummaryPlanningTests(unittest.TestCase):
     def test_new_period_is_inserted_at_g_and_existing_fixed_fields_stay_unchanged(self):
@@ -127,6 +133,18 @@ class ScanSummaryPlanningTests(unittest.TestCase):
 
         with self.assertRaisesRegex(SummaryUpdateError, "重复周期"):
             plan_summary_update("slow_service", "0817-0823", [], existing)
+
+    def test_retry_reuses_empty_g_left_by_interrupted_insert(self):
+        existing = [
+            [*FIXED_HEADERS["slow_service"], "", "0817-0823"],
+            ["app-a", "S.query", "张三", "待处理", "", "", "", "100 / 1"],
+        ]
+        current = [{"应用英文名": "app-a", "服务名": "S.query", "平均耗时(ms)": "300", "调用次数": "2"}]
+
+        plan = plan_summary_update("slow_service", "0824-0830", current, existing)
+
+        self.assertFalse(plan.insert_period)
+        self.assertEqual(plan.period_col, 6)
 
 
 if __name__ == "__main__":

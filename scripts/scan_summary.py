@@ -45,9 +45,12 @@ class SummaryUpdatePlan:
 
 def _decimal(value: object, field_name: str) -> Decimal:
     try:
-        return Decimal(str(value).strip().replace(",", ""))
+        parsed = Decimal(str(value).strip().replace(",", ""))
     except (InvalidOperation, ValueError):
         raise SummaryUpdateError(f"{field_name} 不是有效数字: {value!r}") from None
+    if not parsed.is_finite():
+        raise SummaryUpdateError(f"{field_name} 不是有限数: {value!r}")
+    return parsed
 
 
 def _format_decimal(value: Decimal) -> str:
@@ -141,9 +144,17 @@ def plan_summary_update(
     if duplicate_periods:
         raise SummaryUpdateError(f"汇总页存在重复周期: {', '.join(duplicate_periods)}")
 
+    if "" in header[7:]:
+        raise SummaryUpdateError("汇总页历史周期表头中存在空列")
+
     if period in header[6:]:
         insert_period = False
         period_col = header.index(period, 6)
+        target_width = len(header)
+    elif len(header) > 6 and header[6] == "":
+        # 恢复“已插入 G 列，但尚未写入周期表头”的中断状态。
+        insert_period = False
+        period_col = 6
         target_width = len(header)
     else:
         insert_period = True
