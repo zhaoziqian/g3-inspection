@@ -655,7 +655,11 @@ class TencentArchiveClient:
         payload = dict(arguments)
         payload["file_id"] = self.file_id
         result = subprocess.run(
-            ["mcporter", "call", "sheet-mcp", tool, "--args", json.dumps(payload, ensure_ascii=False)],
+            [
+                "mcporter", "call", "sheet-mcp", tool,
+                "--output", "json",
+                "--args", json.dumps(payload, ensure_ascii=False),
+            ],
             capture_output=True,
             text=True,
         )

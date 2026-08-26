@@ -443,6 +443,18 @@ class TencentArchiveClientTests(unittest.TestCase):
         with self.assertRaisesRegex(ArchiveError, "permission denied"):
             TencentArchiveClient().sheet_info()
 
+    @patch("scripts.tencent_archive_scan_reports.subprocess.run")
+    def test_client_requests_explicit_json_output_to_avoid_large_response_truncation(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = '{"sheets":[]}'
+        run.return_value.stderr = ""
+
+        TencentArchiveClient().sheet_info()
+
+        command = run.call_args.args[0]
+        self.assertIn("--output", command)
+        self.assertEqual(command[command.index("--output") + 1], "json")
+
 
 if __name__ == "__main__":
     unittest.main()
