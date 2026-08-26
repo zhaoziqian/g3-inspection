@@ -429,6 +429,43 @@ class DestructiveGateTests(unittest.TestCase):
 
 
 class TencentArchiveClientTests(unittest.TestCase):
+    def test_archive_styling_tolerates_remove_filter_when_sheet_has_no_filter(self):
+        class NoFilterClient(TencentArchiveClient):
+            def __init__(self):
+                self.calls = []
+
+            def call(self, tool, arguments):
+                self.calls.append((tool, arguments))
+                if tool == "remove_filter":
+                    raise ArchiveError("code: 12002, msg: remove sheet filter, but sheet has no filter")
+                return {}
+
+        client = NoFilterClient()
+
+        client.style_archive("archive", 0, 11)
+
+        self.assertIn(
+            ("set_filter", {
+                "sheet_id": "archive",
+                "filter_id": "g3_archive_archive",
+                "start_row": 0,
+                "end_row": 0,
+                "start_col": 0,
+                "end_col": 11,
+            }),
+            client.calls,
+        )
+
+    def test_archive_styling_propagates_unrelated_remove_filter_errors(self):
+        class BrokenFilterClient(TencentArchiveClient):
+            def call(self, tool, arguments):
+                if tool == "remove_filter":
+                    raise ArchiveError("permission denied")
+                return {}
+
+        with self.assertRaisesRegex(ArchiveError, "permission denied"):
+            BrokenFilterClient().style_archive("archive", 0, 11)
+
     def test_absolute_script_path_runs_outside_skill_repository(self):
         script = Path(__file__).parents[1] / "scripts" / "tencent_archive_scan_reports.py"
         with tempfile.TemporaryDirectory() as workdir:

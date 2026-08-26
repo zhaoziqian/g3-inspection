@@ -739,7 +739,12 @@ class TencentArchiveClient:
                 },
             )
         self.call("set_freeze", {"sheet_id": sheet_id, "row_count": 1, "col_count": 0})
-        self.call("remove_filter", {"sheet_id": sheet_id})
+        try:
+            self.call("remove_filter", {"sheet_id": sheet_id})
+        except ArchiveError as exc:
+            message = str(exc)
+            if "code: 12002" not in message or "no filter" not in message:
+                raise
         self.call(
             "set_filter",
             {
