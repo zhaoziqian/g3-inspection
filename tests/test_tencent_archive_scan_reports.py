@@ -1,0 +1,160 @@
+import csv
+import io
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts.scan_archive import ARCHIVE_HEADERS, ArchiveError
+from scripts.tencent_archive_scan_reports import (
+    SheetMeta,
+    TencentArchiveClient,
+    build_dry_run,
+    parse_args,
+    read_csv_adaptive,
+    read_source_sheet,
+)
+
+
+SVC_HEADER = ARCHIVE_HEADERS["slow_service"][1:]
+SQL_HEADER = ARCHIVE_HEADERS["slow_sql"][1:]
+
+
+def as_csv(rows):
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerows(rows)
+    return stream.getvalue()
+
+
+class MatrixClient:
+    def __init__(self, sheets, matrices):
+        self._sheets = sheets
+        self.matrices = matrices
+        self.reads = []
+
+    def sheet_info(self):
+        return self._sheets
+
+    def get_csv(self, sheet_id, start_row, end_row, start_col, end_col):
+        self.reads.append((sheet_id, start_row, end_row, start_col, end_col))
+        matrix = self.matrices[sheet_id]
+        rows = []
+        for row_index in range(start_row, end_row + 1):
+            source = matrix[row_index] if row_index < len(matrix) else []
+            rows.append([source[col] if col < len(source) else "" for col in range(start_col, end_col + 1)])
+        return as_csv(rows)
+
+
+class AdaptiveReadTests(unittest.TestCase):
+    def test_invalid_multirow_response_is_bisected_without_skipping_rows(self):
+        class TruncatingClient:
+            def __init__(self):
+                self.calls = []
+
+            def get_csv(self, sheet_id, start_row, end_row, start_col, end_col):
+                self.calls.append((start_row, end_row))
+                if end_row > start_row:
+                    raise ArchiveError("返回无效 JSON")
+                return as_csv([[f"sql-{start_row}"]])
+
+        client = TruncatingClient()
+
+        values = read_csv_adaptive(client, "sql", 1, 4, 4, 4)
+
+        self.assertEqual(values, [["sql-1"], ["sql-2"], ["sql-3"], ["sql-4"]])
+        self.assertIn((1, 4), client.calls)
+        self.assertIn((1, 2), client.calls)
+        self.assertIn((1, 1), client.calls)
+
+    def test_single_unreadable_sql_row_fails_with_sheet_and_row(self):
+        class BrokenClient:
+            def get_csv(self, sheet_id, start_row, end_row, start_col, end_col):
+                raise ArchiveError("返回无效 JSON")
+
+        with self.assertRaisesRegex(ArchiveError, "慢SQL0518-0525.*第 2 行"):
+            read_csv_adaptive(BrokenClient(), "sql-id", 1, 1, 4, 4, sheet_name="慢SQL0518-0525")
+
+    def test_source_reader_preserves_long_sql_and_historical_blank_trace(self):
+        long_sql = "SELECT 'x'\nFROM dual " * 1200
+        old_header = [name for name in SQL_HEADER if name != "链路详情"]
+        old_row = ["start", "end", "app", "mapper", long_sql, "900", "李四", "完成", "方案", "备注"]
+        client = MatrixClient([], {"sql": [old_header, old_row]})
+
+        rows = read_source_sheet(client, SheetMeta("sql", "慢SQL0525-0531", 2, 10), "slow_sql", "0525-0531")
+
+        self.assertEqual(rows[0][5], long_sql)
+        self.assertEqual(rows[0][7], "")
+
+    def test_source_reader_rejects_missing_required_header(self):
+        header = [name for name in SQL_HEADER if name != "SQL语句"]
+        client = MatrixClient([], {"sql": [header]})
+
+        with self.assertRaisesRegex(ArchiveError, "SQL语句"):
+            read_source_sheet(client, SheetMeta("sql", "慢SQL0525-0531", 1, 10), "slow_sql", "0525-0531")
+
+
+class DryRunTests(unittest.TestCase):
+    def test_default_cli_mode_is_dry_run_and_keep_weeks_is_five(self):
+        args = parse_args([])
+        self.assertFalse(args.apply)
+        self.assertEqual(args.keep_weeks, 5)
+
+    def test_build_dry_run_reads_both_sources_before_planning_delete(self):
+        periods = ["0518-0525", "0525-0531", "0601-0607", "0608-0614", "0615-0621", "0622-0628"]
+        sheets = [
+            {"sheet_id": "svc-archive", "sheet_name": "慢服务归档", "row_count": 20, "col_count": 12},
+            {"sheet_id": "sql-archive", "sheet_name": "慢SQL归档", "row_count": 20, "col_count": 12},
+            {"sheet_id": "directory", "sheet_name": "目录", "row_count": 20, "col_count": 26},
+        ]
+        matrices = {
+            "svc-archive": [[]],
+            "sql-archive": [[]],
+            "directory": [[""] * 26, *[[""] * 12 + [period, f"慢服务{period}", f"慢SQL{period}"] for period in periods]],
+        }
+        for period in periods:
+            svc_id = f"svc-{period}"
+            sql_id = f"sql-{period}"
+            sheets.extend((
+                {"sheet_id": svc_id, "sheet_name": f"慢服务{period}", "row_count": 2, "col_count": 11},
+                {"sheet_id": sql_id, "sheet_name": f"慢SQL{period}", "row_count": 2, "col_count": 11},
+            ))
+            matrices[svc_id] = [SVC_HEADER, ["start", "end", "app", "svc", "300", "2", "trace", "张三", "待处理", "", ""]]
+            matrices[sql_id] = [SQL_HEADER, ["start", "end", "app", "mapper", "SELECT 1", "900", "trace", "李四", "待处理", "", ""]]
+        client = MatrixClient(sheets, matrices)
+
+        report = build_dry_run(
+            client,
+            keep_weeks=5,
+            targets={"slow_service": ("慢服务归档", "svc-archive"), "slow_sql": ("慢SQL归档", "sql-archive")},
+            directory_id="directory",
+        )
+
+        self.assertEqual(report["archive_periods"], ["0518-0525"])
+        self.assertEqual(report["keep_periods"], periods[-5:])
+        self.assertEqual(report["slow_service"]["0518-0525"]["source_rows"], 1)
+        self.assertEqual(report["slow_sql"]["0518-0525"]["source_rows"], 1)
+        self.assertEqual(report["delete_sheets"], ["慢服务0518-0525", "慢SQL0518-0525"])
+        self.assertEqual(report["directory_rows"], {"0518-0525": 1})
+
+
+class TencentArchiveClientTests(unittest.TestCase):
+    def test_absolute_script_path_runs_outside_skill_repository(self):
+        script = Path(__file__).parents[1] / "scripts" / "tencent_archive_scan_reports.py"
+        with tempfile.TemporaryDirectory() as workdir:
+            result = subprocess.run([sys.executable, str(script), "--help"], cwd=workdir, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @patch("scripts.tencent_archive_scan_reports.subprocess.run")
+    def test_client_rejects_business_error_json(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = '{"error":"permission denied"}'
+        run.return_value.stderr = ""
+        with self.assertRaisesRegex(ArchiveError, "permission denied"):
+            TencentArchiveClient().sheet_info()
+
+
+if __name__ == "__main__":
+    unittest.main()
