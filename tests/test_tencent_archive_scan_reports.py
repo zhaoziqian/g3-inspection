@@ -475,16 +475,25 @@ class TencentArchiveClientTests(unittest.TestCase):
     @patch("scripts.tencent_archive_scan_reports.subprocess.run")
     def test_client_rejects_business_error_json(self, run):
         run.return_value.returncode = 0
-        run.return_value.stdout = '{"error":"permission denied"}'
-        run.return_value.stderr = ""
+        run.return_value.stdout = b'{"error":"permission denied"}'
+        run.return_value.stderr = b""
         with self.assertRaisesRegex(ArchiveError, "permission denied"):
             TencentArchiveClient().sheet_info()
 
     @patch("scripts.tencent_archive_scan_reports.subprocess.run")
+    def test_client_reports_tool_and_return_code_for_truncated_utf8_output(self, run):
+        run.return_value.returncode = 1
+        run.return_value.stdout = b""
+        run.return_value.stderr = b"partial \xe6"
+
+        with self.assertRaisesRegex(ArchiveError, "set_range_value.*returncode=1.*9 bytes"):
+            TencentArchiveClient().set_values("archive", [])
+
+    @patch("scripts.tencent_archive_scan_reports.subprocess.run")
     def test_client_requests_explicit_json_output_to_avoid_large_response_truncation(self, run):
         run.return_value.returncode = 0
-        run.return_value.stdout = '{"sheets":[]}'
-        run.return_value.stderr = ""
+        run.return_value.stdout = b'{"sheets":[]}'
+        run.return_value.stderr = b""
 
         TencentArchiveClient().sheet_info()
 

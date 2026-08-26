@@ -661,11 +661,22 @@ class TencentArchiveClient:
                 "--args", json.dumps(payload, ensure_ascii=False),
             ],
             capture_output=True,
-            text=True,
         )
+        def decode_output(raw: bytes, stream_name: str) -> str:
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ArchiveError(
+                    f"sheet-mcp {tool} {stream_name} UTF-8 截断 "
+                    f"(returncode={result.returncode}, {len(raw)} bytes): {exc}"
+                ) from None
+
         if result.returncode != 0:
-            raise ArchiveError(result.stderr.strip() or result.stdout.strip())
-        output = result.stdout.strip()
+            error = decode_output(result.stderr, "stderr").strip()
+            if not error:
+                error = decode_output(result.stdout, "stdout").strip()
+            raise ArchiveError(error)
+        output = decode_output(result.stdout, "stdout").strip()
         try:
             data = json.loads(output)
         except json.JSONDecodeError:
