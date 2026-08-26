@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import io
 import json
@@ -19,6 +20,7 @@ try:
         index_archive_blocks,
         normalize_source_rows,
         plan_period_action,
+        row_digest,
         select_archive_periods,
     )
 except ModuleNotFoundError:
@@ -28,6 +30,7 @@ except ModuleNotFoundError:
         index_archive_blocks,
         normalize_source_rows,
         plan_period_action,
+        row_digest,
         select_archive_periods,
     )
 
@@ -216,6 +219,152 @@ def read_archive_sheet(client, meta: SheetMeta, kind: str) -> tuple[list[str], l
     return actual, rows
 
 
+def make_row_cells(kind: str, row_index: int, row: Iterable[str]) -> list[dict[str, Any]]:
+    values = [str(value) for value in row]
+    width = len(ARCHIVE_HEADERS[kind])
+    values = (values + [""] * width)[:width]
+    cells: list[dict[str, Any]] = []
+    for column, value in enumerate(values):
+        cell: dict[str, Any] = {"row": row_index, "col": column, "value_type": "STRING"}
+        if kind == "slow_sql" and column == 5 and value:
+            cell["value_base64"] = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        else:
+            cell["string_value"] = value
+        cells.append(cell)
+    return cells
+
+
+def _write_cell_batches(client, sheet_id: str, cells: Iterable[dict[str, Any]], max_bytes: int = 500_000) -> None:
+    batch: list[dict[str, Any]] = []
+    size = 0
+    for cell in cells:
+        cell_size = len(json.dumps(cell, ensure_ascii=False).encode("utf-8")) + 1
+        if batch and size + cell_size > max_bytes:
+            client.set_values(sheet_id, batch)
+            batch = []
+            size = 0
+        batch.append(cell)
+        size += cell_size
+    if batch:
+        client.set_values(sheet_id, batch)
+
+
+def _desired_archive_rows(
+    current_rows: Iterable[Iterable[str]],
+    source_by_period: dict[str, list[list[str]]],
+) -> list[list[str]]:
+    desired = [[str(value) for value in row] for row in current_rows]
+    for period, source_rows in source_by_period.items():
+        blocks = index_archive_blocks(desired)
+        block = blocks.get(period)
+        if block:
+            desired[block.start : block.end] = [list(row) for row in source_rows]
+        else:
+            desired.extend([list(row) for row in source_rows])
+    index_archive_blocks(desired)
+    return desired
+
+
+def apply_archive_sheet(
+    client,
+    meta: SheetMeta,
+    kind: str,
+    current_rows: list[list[str]],
+    source_by_period: dict[str, list[list[str]]],
+) -> list[list[str]]:
+    desired = _desired_archive_rows(current_rows, source_by_period)
+    needed_rows = 1 + len(desired)
+    if needed_rows > meta.row_count:
+        client.insert_dimension(
+            meta.sheet_id,
+            dimension_type="row",
+            index=max(meta.row_count - 1, 0),
+            count=needed_rows - meta.row_count,
+            direction="after",
+        )
+
+    if not current_rows:
+        _write_cell_batches(client, meta.sheet_id, make_row_cells(kind, 0, ARCHIVE_HEADERS[kind]))
+
+    working = [list(row) for row in current_rows]
+    for period, source_rows in source_by_period.items():
+        blocks = index_archive_blocks(working)
+        block = blocks.get(period)
+        existing = list(block.rows) if block else []
+        action = plan_period_action(source_rows, existing, source_exists=True)
+        if action == "skip":
+            continue
+        if action == "append":
+            start = len(working)
+            working.extend([list(row) for row in source_rows])
+        else:
+            assert block is not None
+            start = block.start
+            old_count = block.end - block.start
+            new_count = len(source_rows)
+            absolute_start = start + 1
+            if old_count != new_count:
+                client.delete_dimension(
+                    meta.sheet_id,
+                    dimension_type="row",
+                    index=absolute_start,
+                    count=old_count,
+                )
+                if new_count:
+                    client.insert_dimension(
+                        meta.sheet_id,
+                        dimension_type="row",
+                        index=absolute_start,
+                        count=new_count,
+                        direction="before",
+                    )
+            else:
+                client.clear_range(
+                    meta.sheet_id,
+                    start_row=absolute_start,
+                    end_row=absolute_start + old_count - 1,
+                    start_col=0,
+                    end_col=len(ARCHIVE_HEADERS[kind]) - 1,
+                )
+            working[start : block.end] = [list(row) for row in source_rows]
+        cells = [
+            cell
+            for offset, row in enumerate(source_rows)
+            for cell in make_row_cells(kind, start + 1 + offset, row)
+        ]
+        _write_cell_batches(client, meta.sheet_id, cells)
+
+    if working != desired:
+        raise ArchiveError(f"{meta.sheet_name} 内部写入计划不一致")
+    client.style_archive(meta.sheet_id, len(desired), len(ARCHIVE_HEADERS[kind]) - 1)
+    return desired
+
+
+def verify_archive_pair(
+    client,
+    target_metas: dict[str, SheetMeta],
+    expected_by_kind: dict[str, list[list[str]]],
+) -> None:
+    for kind in ("slow_service", "slow_sql"):
+        expected = expected_by_kind[kind]
+        header, actual = read_archive_sheet(client, target_metas[kind], kind)
+        if header != ARCHIVE_HEADERS[kind]:
+            raise ArchiveError(f"{target_metas[kind].sheet_name} 表头写后校验失败")
+        if len(actual) != len(expected):
+            raise ArchiveError(
+                f"{target_metas[kind].sheet_name} 行数不一致: 期望 {len(expected)}，实际 {len(actual)}"
+            )
+        actual_hashes = [row_digest(row) for row in actual]
+        expected_hashes = [row_digest(row) for row in expected]
+        if actual_hashes != expected_hashes:
+            mismatch = next(
+                (index for index, pair in enumerate(zip(actual_hashes, expected_hashes)) if pair[0] != pair[1]),
+                0,
+            )
+            raise ArchiveError(f"{target_metas[kind].sheet_name} 第 {mismatch + 2} 行内容不一致")
+        index_archive_blocks(actual)
+
+
 def _directory_period_rows(client, meta: SheetMeta) -> dict[str, int]:
     values = _read_column(client, meta, DIRECTORY_PERIOD_COL)
     result: dict[str, int] = {}
@@ -330,6 +479,73 @@ class TencentArchiveClient:
                 "return_csv": True,
             },
         ).get("csv_data", "")
+
+    def insert_dimension(self, sheet_id: str, **arguments) -> None:
+        self.call("insert_dimension", {"sheet_id": sheet_id, **arguments})
+
+    def delete_dimension(self, sheet_id: str, **arguments) -> None:
+        self.call("delete_dimension", {"sheet_id": sheet_id, **arguments})
+
+    def clear_range(self, sheet_id: str, **arguments) -> None:
+        self.call("clear_range_cells", {"sheet_id": sheet_id, **arguments})
+
+    def set_values(self, sheet_id: str, values: list[dict[str, Any]]) -> None:
+        self.call("set_range_value", {"sheet_id": sheet_id, "values": values})
+
+    def style_archive(self, sheet_id: str, end_row: int, end_col: int) -> None:
+        self.call(
+            "set_cell_style",
+            {
+                "sheet_id": sheet_id,
+                "start_row": 0,
+                "end_row": 0,
+                "start_col": 0,
+                "end_col": end_col,
+                "bg_color": "FF4472C4",
+                "font_color": "FFFFFFFF",
+                "bold": True,
+                "horizontal_align": "center",
+                "vertical_align": "center",
+                "wrap_text": True,
+            },
+        )
+        if end_row >= 1:
+            self.call(
+                "set_cell_style",
+                {
+                    "sheet_id": sheet_id,
+                    "start_row": 1,
+                    "end_row": end_row,
+                    "start_col": 0,
+                    "end_col": end_col,
+                    "vertical_align": "top",
+                    "wrap_text": True,
+                },
+            )
+        self.call("set_freeze", {"sheet_id": sheet_id, "row_count": 1, "col_count": 0})
+        self.call("remove_filter", {"sheet_id": sheet_id})
+        self.call(
+            "set_filter",
+            {
+                "sheet_id": sheet_id,
+                "filter_id": f"g3_archive_{sheet_id}",
+                "start_row": 0,
+                "end_row": end_row,
+                "start_col": 0,
+                "end_col": end_col,
+            },
+        )
+        widths = [105, 145, 145, 140, 280, 400, 110, 300, 100, 100, 300, 200]
+        self.call(
+            "set_dimension_size",
+            {
+                "sheet_id": sheet_id,
+                "dimensions": [
+                    {"dimension_type": "col", "index": index, "size": width}
+                    for index, width in enumerate(widths[: end_col + 1])
+                ],
+            },
+        )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

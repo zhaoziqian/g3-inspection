@@ -1,4 +1,5 @@
 import csv
+import base64
 import io
 import subprocess
 import sys
@@ -11,10 +12,13 @@ from scripts.scan_archive import ARCHIVE_HEADERS, ArchiveError
 from scripts.tencent_archive_scan_reports import (
     SheetMeta,
     TencentArchiveClient,
+    apply_archive_sheet,
     build_dry_run,
+    make_row_cells,
     parse_args,
     read_csv_adaptive,
     read_source_sheet,
+    verify_archive_pair,
 )
 
 
@@ -46,6 +50,26 @@ class MatrixClient:
             source = matrix[row_index] if row_index < len(matrix) else []
             rows.append([source[col] if col < len(source) else "" for col in range(start_col, end_col + 1)])
         return as_csv(rows)
+
+
+class WriteClient:
+    def __init__(self):
+        self.actions = []
+
+    def insert_dimension(self, sheet_id, **arguments):
+        self.actions.append(("insert_dimension", sheet_id, arguments))
+
+    def delete_dimension(self, sheet_id, **arguments):
+        self.actions.append(("delete_dimension", sheet_id, arguments))
+
+    def clear_range(self, sheet_id, **arguments):
+        self.actions.append(("clear_range", sheet_id, arguments))
+
+    def set_values(self, sheet_id, values):
+        self.actions.append(("set_values", sheet_id, values))
+
+    def style_archive(self, sheet_id, end_row, end_col):
+        self.actions.append(("style_archive", sheet_id, end_row, end_col))
 
 
 class AdaptiveReadTests(unittest.TestCase):
@@ -151,6 +175,86 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(report["slow_sql"]["0518-0525"]["source_rows"], 1)
         self.assertEqual(report["delete_sheets"], ["慢服务0518-0525", "慢SQL0518-0525"])
         self.assertEqual(report["directory_rows"], {"0518-0525": 1})
+
+
+class ArchiveWriteTests(unittest.TestCase):
+    def test_sql_statement_cells_use_base64_without_plaintext(self):
+        row = ["0518-0525", "start", "end", "app", "mapper", "SELECT * FROM secret", "900", "", "", "", "", ""]
+
+        cells = make_row_cells("slow_sql", 1, row)
+
+        sql_cell = cells[5]
+        self.assertNotIn("string_value", sql_cell)
+        self.assertEqual(base64.b64decode(sql_cell["value_base64"]).decode("utf-8"), row[5])
+        self.assertEqual(cells[4]["string_value"], "mapper")
+
+    def test_empty_archive_writes_header_and_rows_and_expands_capacity(self):
+        client = WriteClient()
+        rows = [
+            ["0518-0525", "start", "end", "app", "svc-a", "300", "2", "", "", "", "", ""],
+            ["0518-0525", "start", "end", "app", "svc-b", "400", "1", "", "", "", "", ""],
+        ]
+
+        expected = apply_archive_sheet(
+            client,
+            SheetMeta("archive", "慢服务归档", 1, 12),
+            "slow_service",
+            [],
+            {"0518-0525": rows},
+        )
+
+        self.assertEqual(expected, rows)
+        insert = next(action for action in client.actions if action[0] == "insert_dimension")
+        self.assertEqual(insert[2], {"dimension_type": "row", "index": 0, "count": 2, "direction": "after"})
+        written = [cell for action in client.actions if action[0] == "set_values" for cell in action[2]]
+        self.assertIn({"row": 0, "col": 0, "value_type": "STRING", "string_value": "周期"}, written)
+        self.assertIn({"row": 2, "col": 4, "value_type": "STRING", "string_value": "svc-b"}, written)
+        self.assertEqual(client.actions[-1], ("style_archive", "archive", 2, 11))
+
+    def test_mismatched_existing_period_replaces_only_its_dimension_block(self):
+        client = WriteClient()
+        current = [
+            ["0518-0525", "old-a"],
+            ["0518-0525", "old-b"],
+            ["0525-0531", "keep"],
+        ]
+        replacement = [["0518-0525", "new"]]
+
+        expected = apply_archive_sheet(
+            client,
+            SheetMeta("archive", "慢服务归档", 20, 12),
+            "slow_service",
+            current,
+            {"0518-0525": replacement},
+        )
+
+        self.assertEqual(expected, [replacement[0], current[2]])
+        delete = next(action for action in client.actions if action[0] == "delete_dimension")
+        self.assertEqual(delete[2], {"dimension_type": "row", "index": 1, "count": 2})
+        insert = next(action for action in client.actions if action[0] == "insert_dimension")
+        self.assertEqual(insert[2], {"dimension_type": "row", "index": 1, "count": 1, "direction": "before"})
+
+    def test_verify_archive_pair_rejects_any_full_row_hash_mismatch(self):
+        svc_rows = [["0518-0525", "start", "end", "app", "svc", "300", "2", "", "", "", "", ""]]
+        sql_rows = [["0518-0525", "start", "end", "app", "mapper", "SELECT 1", "900", "", "", "", "", ""]]
+        sheets = [
+            {"sheet_id": "svc", "sheet_name": "慢服务归档", "row_count": 2, "col_count": 12},
+            {"sheet_id": "sql", "sheet_name": "慢SQL归档", "row_count": 2, "col_count": 12},
+        ]
+        matrices = {
+            "svc": [list(ARCHIVE_HEADERS["slow_service"]), *[row[:] for row in svc_rows]],
+            "sql": [list(ARCHIVE_HEADERS["slow_sql"]), *[row[:] for row in sql_rows]],
+        }
+        client = MatrixClient(sheets, matrices)
+        metas = {
+            "slow_service": SheetMeta("svc", "慢服务归档", 2, 12),
+            "slow_sql": SheetMeta("sql", "慢SQL归档", 2, 12),
+        }
+
+        verify_archive_pair(client, metas, {"slow_service": svc_rows, "slow_sql": sql_rows})
+        matrices["sql"][1][6] = "901"
+        with self.assertRaisesRegex(ArchiveError, "内容不一致"):
+            verify_archive_pair(client, metas, {"slow_service": svc_rows, "slow_sql": sql_rows})
 
 
 class TencentArchiveClientTests(unittest.TestCase):
