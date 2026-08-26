@@ -1,12 +1,9 @@
 ---
 name: g3-inspection
 description: >
-  Trade System 2.0 weekly inspection workflow automation. Use when the user mentions
-  g3 inspection, 贸易系统2.0巡检, 周巡检, week-init, week-generate, week-email,
-  week-db-inspect, 数据库巡检, week-tencent-upload, 腾讯文档上传, 慢服务上传, 慢SQL上传,
-  creating weekly inspection directories, generating weekly inspection email HTML,
-  generating inspection email assets, or sending weekly inspection emails with
-  inline images and attachments.
+  Use when the user mentions g3 inspection, 贸易系统2.0巡检, 周巡检, week-init,
+  week-generate, week-email, week-db-inspect, week-tencent-upload, week-tencent-summary,
+  腾讯文档上传, 慢服务汇总, 慢SQL汇总, 数据库巡检, 或巡检邮件。
 ---
 
 # G3 Inspection
@@ -17,6 +14,7 @@ Use this skill to operate the Trade System 2.0 weekly inspection workflow.
 
 - `week-init`: create or complete the weekly inspection directory.
 - `week-tencent-upload`: upload slow-service and slow-SQL scan reports to Tencent Docs.
+- `week-tencent-summary`: refresh the two long-term scan summary sheets after current-week detail data is complete.
 - `week-generate`: generate inspection assets and `邮件内容.html`.
 - `week-email`: send the weekly inspection email.
 - `week-generate + week-email`: run generation first, then prepare email sending. Still require user confirmation before sending.
@@ -471,6 +469,48 @@ Rules:
 - For slow-SQL, do not read or write the `SQL语句` column. The backfill only needs `SQL名` and `责任人`.
 - If a current item is not in the config, leave its owner blank and report the unmatched count.
 - Use `--dry-run` to inspect counts without writing Tencent Docs.
+
+## week-tencent-summary
+
+Continuously updates the already-initialized `慢服务汇总` (`z776s9`) and `慢SQL汇总` (`cczg56`) sheets. This command does not initialize or rebuild historical summaries.
+
+Run it only after this sequence is complete:
+
+```text
+week-tencent-upload
+→ manually paste the current slow-SQL rows
+→ week-owner-backfill
+→ week-tencent-summary dry-run
+→ week-tencent-summary apply
+```
+
+Preview first:
+
+```bash
+python3 "$SKILL_DIR/scripts/tencent_refresh_scan_summary.py" --period <MMDD-MMDD>
+```
+
+The preview must report both types, the source row count, aggregated unique item count, new item count, whether G will be inserted, and the target period column. Resolve any error before applying.
+
+An empty current-week sheet is rejected by default because it usually means the slow-SQL manual paste was missed. Only when zero findings have been independently confirmed, add `--allow-empty` to both preview and apply.
+
+Then write:
+
+```bash
+python3 "$SKILL_DIR/scripts/tencent_refresh_scan_summary.py" --period <MMDD-MMDD> --apply
+```
+
+Update contract:
+
+- Source sheets must be exactly `慢服务<MMDD-MMDD>` and `慢SQL<MMDD-MMDD>`.
+- Slow service is unique by `应用英文名 + 服务名`; its weekly value is `max(平均耗时(ms)) / sum(调用次数)`.
+- Slow SQL is unique by `应用英文名 + SQL名`; its weekly value is `max(耗时(ms)) / occurrence count`.
+- A new period is inserted at column G. Re-running the same period reuses that column and must not create a duplicate period.
+- Existing rows only receive the period value. Never modify their A-F fixed fields.
+- New keys append to the bottom and initialize A-F from the current period; missing owners stay blank.
+- Never read or write the slow-SQL `SQL语句` column.
+- Summary history is retained permanently. Do not delete older period columns here.
+- Apply re-reads both summary sheets and verifies the period, fixed fields, history, and weekly values. If one Tencent API call fails midway, correct the cause and rerun the same period; the command reuses that period column instead of adding another one.
 
 ## Safety
 

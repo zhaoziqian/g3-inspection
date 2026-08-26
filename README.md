@@ -2,7 +2,7 @@
 
 贸易系统 2.0 **周巡检工作流自动化** Claude Code Skill。
 
-四条指令覆盖从目录初始化、数据库巡检、资产生成到邮件发送的全流程。
+多条指令覆盖从目录初始化、数据库巡检、资产生成、腾讯文档汇总到邮件发送的全流程。
 
 ---
 
@@ -32,6 +32,8 @@ g3-inspection/
 │   ├── capture_slow_service_chart.py  # 截取慢服务图表 PNG
 │   ├── capture_sql_chart.py           # 截取慢 SQL 图表 PNG
 │   ├── create_issue_type_pie_chart.py # 生成问题类型分布环形饼图 PNG
+│   ├── scan_summary.py                # 周汇总聚合与更新计划
+│   ├── tencent_refresh_scan_summary.py # 更新腾讯文档慢服务/慢SQL汇总
 │   └── send_email.py                  # 发送巡检邮件（支持 --dry-run）
 └── references/
     ├── email-template.json   # 邮件配置模板（入库）
@@ -145,6 +147,34 @@ Skill 会先执行 dry-run，展示收件人、抄送、邮件主题供确认，
   --item "需求更改=7" \
   --item "业务逻辑问题=23"
 ```
+
+---
+
+### 6. `week-tencent-summary` — 更新慢服务 / 慢SQL 汇总
+
+在当周慢SQL数据手工粘贴、责任人回填完成后执行：
+
+```bash
+# 先 dry-run
+python3 "$SKILL_DIR/scripts/tencent_refresh_scan_summary.py" --period 0824-0830
+
+# 确认统计后写入
+python3 "$SKILL_DIR/scripts/tencent_refresh_scan_summary.py" --period 0824-0830 --apply
+```
+
+工作流顺序：
+
+```text
+week-tencent-upload
+→ 手工粘贴慢SQL
+→ week-owner-backfill
+→ week-tencent-summary dry-run
+→ week-tencent-summary apply
+```
+
+目标页：`慢服务汇总` (`z776s9`)、`慢SQL汇总` (`cczg56`)。新周期插入 G 列；已有项只更新周值，不改 A-F 固定字段；新项追加到底部。慢服务周值为“最大平均耗时 / 调用次数合计”，慢SQL为“最大耗时 / 出现次数”。
+
+当周明细为空时默认停止，防止忘记粘贴慢SQL；只有确认本周确实零记录时才使用 `--allow-empty`。`--apply` 后会回读校验。如接口中途失败，处理原因后重跑同一周期即可，脚本不会重复新增周期列。
 
 ---
 
