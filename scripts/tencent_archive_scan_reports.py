@@ -53,6 +53,19 @@ class SheetMeta:
     col_count: int
 
 
+@dataclass(frozen=True)
+class ArchivePreparation:
+    report: dict[str, Any]
+    periods: tuple[str, ...]
+    target_metas: dict[str, SheetMeta]
+    current_rows: dict[str, list[list[str]]]
+    sources: dict[str, dict[str, list[list[str]]]]
+    source_metas: dict[str, dict[str, SheetMeta]]
+    directory_meta: SheetMeta
+    directory_rows: dict[str, int]
+    directory_sentinels: dict[str, tuple[tuple[str, ...], tuple[str, ...]]]
+
+
 def _meta(raw: dict[str, Any]) -> SheetMeta:
     return SheetMeta(
         str(raw["sheet_id"]),
@@ -186,7 +199,7 @@ def read_source_sheet(client, meta: SheetMeta, kind: str, period: str) -> list[l
     ordinary_indexes = [index for name, index in columns.items() if name in wanted and index != sql_column]
     by_index = _read_columns(client, meta, ordinary_indexes)
     if sql_column is not None:
-        by_index[sql_column] = _read_column(client, meta, sql_column, batch_size=10)
+        by_index[sql_column] = _read_column(client, meta, sql_column, batch_size=50)
     raw_columns = {name: by_index[index] for name, index in columns.items() if name in wanted}
     row_count = max((len(values) for values in raw_columns.values()), default=0)
     raw_rows = [
@@ -209,7 +222,7 @@ def read_archive_sheet(client, meta: SheetMeta, kind: str) -> tuple[list[str], l
     ordinary_indexes = [column for column in range(len(used_header)) if column != sql_column]
     columns = _read_columns(client, meta, ordinary_indexes)
     if sql_column is not None:
-        columns[sql_column] = _read_column(client, meta, sql_column, batch_size=10)
+        columns[sql_column] = _read_column(client, meta, sql_column, batch_size=50)
     row_count = max((len(values) for values in columns.values()), default=0)
     rows = [[columns[column][row] for column in range(len(used_header))] for row in range(row_count)]
     while rows and not any(rows[-1]):
@@ -378,13 +391,94 @@ def _directory_period_rows(client, meta: SheetMeta) -> dict[str, int]:
     return result
 
 
-def build_dry_run(
+def read_directory_sentinels(
+    client,
+    meta: SheetMeta,
+    period_rows: dict[str, int],
+) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
+    if not period_rows:
+        return {}
+    first_row = min(period_rows.values())
+    last_row = max(period_rows.values())
+    left = read_csv_adaptive(client, meta.sheet_id, first_row, last_row, 0, 11, sheet_name=meta.sheet_name)
+    right = read_csv_adaptive(client, meta.sheet_id, first_row, last_row, 15, 25, sheet_name=meta.sheet_name)
+    return {
+        period: (
+            tuple(left[row_index - first_row]),
+            tuple(right[row_index - first_row]),
+        )
+        for period, row_index in period_rows.items()
+    }
+
+
+def clear_directory_periods(
+    client,
+    meta: SheetMeta,
+    period_rows: dict[str, int],
+    snapshots: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
+) -> None:
+    for period, row_index in period_rows.items():
+        if period not in snapshots:
+            raise ArchiveError(f"目录周期 {period} 缺少清理前快照")
+        client.clear_link(meta.sheet_id, row_index, 13)
+        client.clear_link(meta.sheet_id, row_index, 14)
+        client.clear_range(
+            meta.sheet_id,
+            start_row=row_index,
+            end_row=row_index,
+            start_col=12,
+            end_col=14,
+        )
+    if not period_rows:
+        return
+    first_row = min(period_rows.values())
+    last_row = max(period_rows.values())
+    cleared = read_csv_adaptive(client, meta.sheet_id, first_row, last_row, 12, 14, sheet_name=meta.sheet_name)
+    for period, row_index in period_rows.items():
+        if any(cleared[row_index - first_row]):
+            raise ArchiveError(f"目录周期 {period} 的 M:O 未清空")
+    after = read_directory_sentinels(client, meta, period_rows)
+    for period, before in snapshots.items():
+        if after.get(period) != before:
+            raise ArchiveError(f"目录周期 {period} 同行 A:L 或 P:Z 发生变化")
+
+
+def delete_verified_sources(
+    client,
+    source_metas: dict[str, dict[str, SheetMeta]],
+    periods: Iterable[str],
+    *,
+    archives_verified: bool,
+) -> list[str]:
+    if not archives_verified:
+        raise ArchiveError("尚未通过双归档校验，禁止删除源 Sheet")
+    deleted: list[str] = []
+    deleted_ids: list[str] = []
+    for period in periods:
+        for kind in ("slow_service", "slow_sql"):
+            meta = source_metas.get(kind, {}).get(period)
+            if not meta:
+                continue
+            expected_name = f"{SOURCE_PREFIX[kind]}{period}"
+            if meta.sheet_name != expected_name:
+                raise ArchiveError(f"拒绝删除非规范 Sheet: {meta.sheet_name}")
+            client.delete_sheet(meta.sheet_id)
+            deleted.append(meta.sheet_name)
+            deleted_ids.append(meta.sheet_id)
+    remaining = {str(sheet["sheet_id"]): str(sheet["sheet_name"]) for sheet in client.sheet_info()}
+    still_present = [remaining[sheet_id] for sheet_id in deleted_ids if sheet_id in remaining]
+    if still_present:
+        raise ArchiveError(f"源 Sheet 删除后仍存在: {', '.join(still_present)}")
+    return deleted
+
+
+def prepare_archive(
     client,
     *,
     keep_weeks: int = 5,
     targets: dict[str, tuple[str, str]] = TARGETS,
     directory_id: str = DIRECTORY_SHEET_ID,
-) -> dict[str, Any]:
+) -> ArchivePreparation:
     metas = [_meta(raw) for raw in client.sheet_info()]
     by_name = {meta.sheet_name: meta for meta in metas}
     by_id = {meta.sheet_id: meta for meta in metas}
@@ -407,17 +501,41 @@ def build_dry_run(
         raise ArchiveError(f"找不到目录 Sheet: {directory_id}")
     directory_rows = _directory_period_rows(client, directory)
 
+    base_periods = list(selection.archive)
+    archived_in_both = set(archive_blocks["slow_service"]) & set(archive_blocks["slow_sql"])
+    recovery_periods = [
+        period
+        for period in archive_blocks["slow_service"]
+        if period in archived_in_both
+        and period in directory_rows
+        and period not in base_periods
+        and (
+            f"慢服务{period}" not in by_name
+            or f"慢SQL{period}" not in by_name
+        )
+    ]
+    periods = tuple(base_periods + recovery_periods)
+
     sources: dict[str, dict[str, list[list[str]]]] = {"slow_service": {}, "slow_sql": {}}
-    for period in selection.archive:
+    source_metas: dict[str, dict[str, SheetMeta]] = {"slow_service": {}, "slow_sql": {}}
+    source_exists: dict[str, dict[str, bool]] = {"slow_service": {}, "slow_sql": {}}
+    for period in periods:
         for kind in ("slow_service", "slow_sql"):
             source_name = f"{SOURCE_PREFIX[kind]}{period}"
             source = by_name.get(source_name)
-            if not source:
-                raise ArchiveError(f"找不到待归档源 Sheet: {source_name}")
-            sources[kind][period] = read_source_sheet(client, source, kind, period)
+            source_exists[kind][period] = source is not None
+            if source:
+                source_metas[kind][period] = source
+                sources[kind][period] = read_source_sheet(client, source, kind, period)
+            else:
+                existing = archive_blocks[kind].get(period)
+                if not existing:
+                    raise ArchiveError(f"找不到待归档源 Sheet 且归档块不存在: {source_name}")
+                sources[kind][period] = [list(row) for row in existing.rows]
 
     report: dict[str, Any] = {
-        "archive_periods": list(selection.archive),
+        "archive_periods": list(periods),
+        "recovery_periods": recovery_periods,
         "keep_periods": list(selection.keep),
         "unpaired_periods": list(selection.unpaired),
         "slow_service": {},
@@ -425,7 +543,7 @@ def build_dry_run(
         "delete_sheets": [],
         "directory_rows": {},
     }
-    for period in selection.archive:
+    for period in periods:
         for kind in ("slow_service", "slow_sql"):
             existing = archive_blocks[kind].get(period)
             existing_rows = list(existing.rows) if existing else []
@@ -433,11 +551,99 @@ def build_dry_run(
             report[kind][period] = {
                 "source_rows": len(source_rows),
                 "existing_rows": len(existing_rows),
-                "action": plan_period_action(source_rows, existing_rows, source_exists=True),
+                "action": plan_period_action(
+                    source_rows,
+                    existing_rows,
+                    source_exists=source_exists[kind][period],
+                ),
             }
-            report["delete_sheets"].append(f"{SOURCE_PREFIX[kind]}{period}")
+            if source_exists[kind][period]:
+                report["delete_sheets"].append(f"{SOURCE_PREFIX[kind]}{period}")
         if period in directory_rows:
             report["directory_rows"][period] = directory_rows[period]
+    selected_directory_rows = {
+        period: directory_rows[period]
+        for period in periods
+        if period in directory_rows
+    }
+    sentinels = read_directory_sentinels(client, directory, selected_directory_rows)
+    return ArchivePreparation(
+        report=report,
+        periods=periods,
+        target_metas=target_metas,
+        current_rows=archive_rows,
+        sources=sources,
+        source_metas=source_metas,
+        directory_meta=directory,
+        directory_rows=selected_directory_rows,
+        directory_sentinels=sentinels,
+    )
+
+
+def build_dry_run(
+    client,
+    *,
+    keep_weeks: int = 5,
+    targets: dict[str, tuple[str, str]] = TARGETS,
+    directory_id: str = DIRECTORY_SHEET_ID,
+) -> dict[str, Any]:
+    return prepare_archive(
+        client,
+        keep_weeks=keep_weeks,
+        targets=targets,
+        directory_id=directory_id,
+    ).report
+
+
+def run_archive(
+    client,
+    *,
+    keep_weeks: int = 5,
+    apply: bool = False,
+    targets: dict[str, tuple[str, str]] = TARGETS,
+    directory_id: str = DIRECTORY_SHEET_ID,
+) -> dict[str, Any]:
+    preparation = prepare_archive(
+        client,
+        keep_weeks=keep_weeks,
+        targets=targets,
+        directory_id=directory_id,
+    )
+    report = preparation.report
+    if not apply or not preparation.periods:
+        return report
+
+    expected: dict[str, list[list[str]]] = {}
+    for kind in ("slow_service", "slow_sql"):
+        expected[kind] = apply_archive_sheet(
+            client,
+            preparation.target_metas[kind],
+            kind,
+            preparation.current_rows[kind],
+            preparation.sources[kind],
+        )
+
+    refreshed = {_meta(raw).sheet_id: _meta(raw) for raw in client.sheet_info()}
+    target_metas = {
+        kind: refreshed.get(meta.sheet_id, meta)
+        for kind, meta in preparation.target_metas.items()
+    }
+    verify_archive_pair(client, target_metas, expected)
+    report["archives_verified"] = True
+
+    report["deleted_sheets"] = delete_verified_sources(
+        client,
+        preparation.source_metas,
+        preparation.periods,
+        archives_verified=True,
+    )
+    clear_directory_periods(
+        client,
+        preparation.directory_meta,
+        preparation.directory_rows,
+        preparation.directory_sentinels,
+    )
+    report["directory_cleared"] = list(preparation.directory_rows)
     return report
 
 
@@ -488,6 +694,12 @@ class TencentArchiveClient:
 
     def clear_range(self, sheet_id: str, **arguments) -> None:
         self.call("clear_range_cells", {"sheet_id": sheet_id, **arguments})
+
+    def clear_link(self, sheet_id: str, row: int, col: int) -> None:
+        self.call("clear_link", {"sheet_id": sheet_id, "row": row, "col": col})
+
+    def delete_sheet(self, sheet_id: str) -> None:
+        self.call("delete_sheet", {"sheet_id": sheet_id})
 
     def set_values(self, sheet_id: str, values: list[dict[str, Any]]) -> None:
         self.call("set_range_value", {"sheet_id": sheet_id, "values": values})
@@ -559,9 +771,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
-        report = build_dry_run(TencentArchiveClient(args.file_id), keep_weeks=args.keep_weeks)
-        if args.apply:
-            raise ArchiveError("apply 尚未实现")
+        report = run_archive(
+            TencentArchiveClient(args.file_id),
+            keep_weeks=args.keep_weeks,
+            apply=args.apply,
+        )
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1

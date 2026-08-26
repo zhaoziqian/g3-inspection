@@ -4,6 +4,7 @@ import io
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,10 +15,14 @@ from scripts.tencent_archive_scan_reports import (
     TencentArchiveClient,
     apply_archive_sheet,
     build_dry_run,
+    clear_directory_periods,
+    delete_verified_sources,
     make_row_cells,
     parse_args,
+    read_directory_sentinels,
     read_csv_adaptive,
     read_source_sheet,
+    run_archive,
     verify_archive_pair,
 )
 
@@ -132,6 +137,15 @@ class AdaptiveReadTests(unittest.TestCase):
             ("sql", 1, 1, 4, 4),
         ])
 
+    def test_sql_column_starts_with_fifty_rows_then_adapts_on_failure(self):
+        rows = [["start", "end", "app", f"mapper-{index}", f"SELECT {index}", "900", "", "", "", "", ""] for index in range(51)]
+        client = MatrixClient([], {"sql": [SQL_HEADER, *rows]})
+
+        read_source_sheet(client, SheetMeta("sql", "慢SQL0518-0525", 52, 11), "slow_sql", "0518-0525")
+
+        sql_reads = [read for read in client.reads if read[3:] == (4, 4)]
+        self.assertEqual(sql_reads, [("sql", 1, 50, 4, 4), ("sql", 51, 51, 4, 4)])
+
 
 class DryRunTests(unittest.TestCase):
     def test_default_cli_mode_is_dry_run_and_keep_weeks_is_five(self):
@@ -175,6 +189,43 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(report["slow_sql"]["0518-0525"]["source_rows"], 1)
         self.assertEqual(report["delete_sheets"], ["慢服务0518-0525", "慢SQL0518-0525"])
         self.assertEqual(report["directory_rows"], {"0518-0525": 1})
+
+    def test_partial_deletion_is_recovered_from_verified_archive_blocks(self):
+        archived_svc = ["0518-0525", "start", "end", "app", "svc", "300", "2", "", "", "", "", ""]
+        archived_sql = ["0518-0525", "start", "end", "app", "mapper", "SELECT 1", "900", "", "", "", "", ""]
+        keep = ["0525-0531", "0601-0607", "0608-0614", "0615-0621", "0622-0628"]
+        sheets = [
+            {"sheet_id": "svc-archive", "sheet_name": "慢服务归档", "row_count": 2, "col_count": 12},
+            {"sheet_id": "sql-archive", "sheet_name": "慢SQL归档", "row_count": 2, "col_count": 12},
+            {"sheet_id": "directory", "sheet_name": "目录", "row_count": 10, "col_count": 26},
+            {"sheet_id": "svc-old", "sheet_name": "慢服务0518-0525", "row_count": 2, "col_count": 11},
+        ]
+        matrices = {
+            "svc-archive": [ARCHIVE_HEADERS["slow_service"], archived_svc],
+            "sql-archive": [ARCHIVE_HEADERS["slow_sql"], archived_sql],
+            "directory": [[""] * 26, [""] * 12 + ["0518-0525", "慢服务0518-0525", "慢SQL0518-0525"]],
+            "svc-old": [SVC_HEADER, archived_svc[1:]],
+        }
+        for period in keep:
+            for kind, prefix, header, row in (
+                ("svc", "慢服务", SVC_HEADER, archived_svc[1:]),
+                ("sql", "慢SQL", SQL_HEADER, archived_sql[1:]),
+            ):
+                sheet_id = f"{kind}-{period}"
+                sheets.append({"sheet_id": sheet_id, "sheet_name": f"{prefix}{period}", "row_count": 2, "col_count": 11})
+                matrices[sheet_id] = [header, row]
+        client = MatrixClient(sheets, matrices)
+
+        report = build_dry_run(
+            client,
+            targets={"slow_service": ("慢服务归档", "svc-archive"), "slow_sql": ("慢SQL归档", "sql-archive")},
+            directory_id="directory",
+        )
+
+        self.assertEqual(report["archive_periods"], ["0518-0525"])
+        self.assertEqual(report["recovery_periods"], ["0518-0525"])
+        self.assertEqual(report["delete_sheets"], ["慢服务0518-0525"])
+        self.assertEqual(report["slow_sql"]["0518-0525"]["action"], "skip")
 
 
 class ArchiveWriteTests(unittest.TestCase):
@@ -255,6 +306,126 @@ class ArchiveWriteTests(unittest.TestCase):
         matrices["sql"][1][6] = "901"
         with self.assertRaisesRegex(ArchiveError, "内容不一致"):
             verify_archive_pair(client, metas, {"slow_service": svc_rows, "slow_sql": sql_rows})
+
+
+class DestructiveGateTests(unittest.TestCase):
+    def test_source_deletion_is_blocked_until_both_archives_are_verified(self):
+        class DeleteClient:
+            def __init__(self):
+                self.deleted = []
+
+            def delete_sheet(self, sheet_id):
+                self.deleted.append(sheet_id)
+
+            def sheet_info(self):
+                return []
+
+        client = DeleteClient()
+        sources = {
+            "slow_service": {"0518-0525": SheetMeta("svc", "慢服务0518-0525", 2, 11)},
+            "slow_sql": {"0518-0525": SheetMeta("sql", "慢SQL0518-0525", 2, 11)},
+        }
+
+        with self.assertRaisesRegex(ArchiveError, "尚未通过双归档校验"):
+            delete_verified_sources(client, sources, ["0518-0525"], archives_verified=False)
+        self.assertEqual(client.deleted, [])
+
+    def test_source_deletion_uses_exact_ids_and_confirms_absence(self):
+        class DeleteClient:
+            def __init__(self):
+                self.sheets = [
+                    {"sheet_id": "svc", "sheet_name": "慢服务0518-0525"},
+                    {"sheet_id": "sql", "sheet_name": "慢SQL0518-0525"},
+                    {"sheet_id": "obsolete", "sheet_name": "慢SQL0525-0531（作废）"},
+                ]
+                self.deleted = []
+
+            def delete_sheet(self, sheet_id):
+                self.deleted.append(sheet_id)
+                self.sheets = [sheet for sheet in self.sheets if sheet["sheet_id"] != sheet_id]
+
+            def sheet_info(self):
+                return self.sheets
+
+        client = DeleteClient()
+        sources = {
+            "slow_service": {"0518-0525": SheetMeta("svc", "慢服务0518-0525", 2, 11)},
+            "slow_sql": {"0518-0525": SheetMeta("sql", "慢SQL0518-0525", 2, 11)},
+        }
+
+        deleted = delete_verified_sources(client, sources, ["0518-0525"], archives_verified=True)
+
+        self.assertEqual(deleted, ["慢服务0518-0525", "慢SQL0518-0525"])
+        self.assertEqual(client.deleted, ["svc", "sql"])
+        self.assertEqual(client.sheets, [{"sheet_id": "obsolete", "sheet_name": "慢SQL0525-0531（作废）"}])
+
+    def test_directory_cleanup_clears_only_m_to_o_and_preserves_sentinels(self):
+        row = [f"v{index}" for index in range(26)]
+        row[12:15] = ["0518-0525", "慢服务0518-0525", "慢SQL0518-0525"]
+
+        class DirectoryClient(MatrixClient):
+            def __init__(self):
+                super().__init__([], {"directory": [[""] * 26, row[:]]})
+                self.cleared_links = []
+
+            def clear_link(self, sheet_id, row, col):
+                self.cleared_links.append((sheet_id, row, col))
+
+            def clear_range(self, sheet_id, **arguments):
+                for row_index in range(arguments["start_row"], arguments["end_row"] + 1):
+                    for col in range(arguments["start_col"], arguments["end_col"] + 1):
+                        self.matrices[sheet_id][row_index][col] = ""
+
+        client = DirectoryClient()
+        meta = SheetMeta("directory", "目录", 2, 26)
+        snapshots = read_directory_sentinels(client, meta, {"0518-0525": 1})
+
+        clear_directory_periods(client, meta, {"0518-0525": 1}, snapshots)
+
+        self.assertEqual(client.cleared_links, [("directory", 1, 13), ("directory", 1, 14)])
+        self.assertEqual(client.matrices["directory"][1][12:15], ["", "", ""])
+        self.assertEqual(client.matrices["directory"][1][:12], row[:12])
+        self.assertEqual(client.matrices["directory"][1][15:], row[15:])
+
+    @patch("scripts.tencent_archive_scan_reports.prepare_archive")
+    @patch("scripts.tencent_archive_scan_reports.apply_archive_sheet")
+    @patch("scripts.tencent_archive_scan_reports.verify_archive_pair")
+    def test_pipeline_never_deletes_when_archive_verification_fails(self, verify, apply_sheet, prepare):
+        class Client:
+            def __init__(self):
+                self.deleted = []
+
+            def sheet_info(self):
+                return [
+                    {"sheet_id": "svc-a", "sheet_name": "慢服务归档", "row_count": 2, "col_count": 12},
+                    {"sheet_id": "sql-a", "sheet_name": "慢SQL归档", "row_count": 2, "col_count": 12},
+                ]
+
+            def delete_sheet(self, sheet_id):
+                self.deleted.append(sheet_id)
+
+        prepare.return_value = SimpleNamespace(
+            report={},
+            periods=("0518-0525",),
+            target_metas={
+                "slow_service": SheetMeta("svc-a", "慢服务归档", 2, 12),
+                "slow_sql": SheetMeta("sql-a", "慢SQL归档", 2, 12),
+            },
+            current_rows={"slow_service": [], "slow_sql": []},
+            sources={"slow_service": {"0518-0525": []}, "slow_sql": {"0518-0525": []}},
+            source_metas={"slow_service": {}, "slow_sql": {}},
+            directory_meta=SheetMeta("directory", "目录", 2, 26),
+            directory_rows={},
+            directory_sentinels={},
+        )
+        apply_sheet.side_effect = [[], []]
+        verify.side_effect = ArchiveError("内容不一致")
+        client = Client()
+
+        with self.assertRaisesRegex(ArchiveError, "内容不一致"):
+            run_archive(client, apply=True)
+
+        self.assertEqual(client.deleted, [])
 
 
 class TencentArchiveClientTests(unittest.TestCase):
