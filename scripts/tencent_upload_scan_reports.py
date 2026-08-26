@@ -3,8 +3,8 @@
 week-tencent-upload: 将周巡检慢服务/慢SQL扫描报告上传到腾讯文档。
 
 工作流：
-  1. 在目录 sheet 写入本周条目（含 set_link 跳转）
-  2. 在文档最前面创建 慢服务MMDD-MMDD 和 慢SQLMMDD-MMDD 两个新 sheet
+  1. 在文档最前面创建 慢服务MMDD-MMDD 和 慢SQLMMDD-MMDD 两个新 sheet
+  2. 将目录 M1:O8 重建为汇总 + 最新五周 + 归档的固定导航
   3. 写入慢服务数据（全量，含样式表头）
   4. 只写慢SQL表头（含样式），数据由用户手动粘贴
   5. 打印用户操作说明
@@ -14,7 +14,6 @@ week-tencent-upload: 将周巡检慢服务/慢SQL扫描报告上传到腾讯文�
   # period_dir 示例：/path/to/20260601-20260607
 """
 import csv
-import io
 import json
 import os
 import re
@@ -22,15 +21,14 @@ import subprocess
 import sys
 import glob
 
+try:
+    from scripts.directory_navigation import rebuild_directory_navigation
+except ModuleNotFoundError:
+    from directory_navigation import rebuild_directory_navigation
+
 # ── 腾讯文档配置 ──────────────────────────────────────────────────────────────
 TENCENT_FILE_ID = "DWHBzb1ZFZWhFREZa"
 TENCENT_FILE_URL = "https://docs.qq.com/sheet/DWHBzb1ZFZWhFREZa"
-DIRECTORY_SHEET_ID = "BB08J2"
-
-# 目录 sheet 中周期/报告列的位置（0-based）
-DIR_COL_PERIOD = 12
-DIR_COL_SLOW_SVC = 13
-DIR_COL_SLOW_SQL = 14
 
 # 表头样式
 HEADER_BG_COLOR = "FF8CDDFA"
@@ -145,39 +143,35 @@ def sheet_has_data(sheet_id):
     return len(lines) > 0, len(lines)
 
 
-def choose_directory_row(period_short, period_cells, start_row=1):
-    """已存在周期复用原行；新周期追加到最后一个非空周期之后。"""
-    normalized = [str(value).strip() for value in period_cells]
-    for offset, value in enumerate(normalized):
-        if value == period_short:
-            return start_row + offset, True
-    occupied = [offset for offset, value in enumerate(normalized) if value]
-    if not occupied:
-        return start_row, False
-    return start_row + occupied[-1] + 1, False
+class UploadDirectoryClient:
+    def set_values(self, sheet_id, values):
+        write_values(sheet_id, values)
+
+    def set_link(self, sheet_id, row, col, url, display_text):
+        sheetengine("set_link", {
+            "file_id": TENCENT_FILE_ID,
+            "sheet_id": sheet_id,
+            "row": row,
+            "col": col,
+            "url": url,
+            "display_text": display_text,
+        })
+
+    def get_cells(self, sheet_id, start_row, end_row, start_col, end_col):
+        response = sheetengine("get_cell_data", {
+            "file_id": TENCENT_FILE_ID,
+            "sheet_id": sheet_id,
+            "start_row": start_row,
+            "end_row": end_row,
+            "start_col": start_col,
+            "end_col": end_col,
+        })
+        return response.get("cells", [])
 
 
-def find_dir_row(period_short):
-    """在目录 sheet 中查找周期行；新周期不复用历史空洞。"""
+def refresh_directory_after_upload():
     info = sheetengine("get_sheet_info", {"file_id": TENCENT_FILE_ID})
-    directory = next(
-        (sheet for sheet in info.get("sheets", []) if sheet.get("sheet_id") == DIRECTORY_SHEET_ID),
-        None,
-    )
-    if not directory:
-        print(f"错误：找不到目录 sheet: {DIRECTORY_SHEET_ID}", file=sys.stderr)
-        sys.exit(1)
-    end_row = max(int(directory.get("row_count", 1)) - 1, 1)
-    data = sheetengine("get_cell_data", {
-        "file_id": TENCENT_FILE_ID,
-        "sheet_id": DIRECTORY_SHEET_ID,
-        "start_row": 1, "start_col": DIR_COL_PERIOD,
-        "end_row": end_row, "end_col": DIR_COL_PERIOD,
-        "return_csv": True
-    })
-    rows = list(csv.reader(io.StringIO(data.get("csv_data", ""))))
-    values = [row[0] if row else "" for row in rows]
-    return choose_directory_row(period_short, values, start_row=1)
+    return rebuild_directory_navigation(UploadDirectoryClient(), info.get("sheets", []))
 
 
 def confirm_overwrite(label):
@@ -291,38 +285,14 @@ def main():
         sql_sheet_id = res["sheet_id"]
         print(f"  ✓ 已创建  sheet_id={sql_sheet_id}")
 
-    # ── Step 3: 目录 sheet 写入本周条目 + 跳转链接 ────────────────────────────
-    print("\nStep 3: 更新目录 sheet...")
-    target_row, dir_exists = find_dir_row(period_short)
-
-    if dir_exists:
-        print(f"  ! 目录第 {target_row+1} 行已有 {period_short} 条目")
-        if not confirm_overwrite(f"目录 {period_short} 条目"):
-            print("  → 跳过目录更新")
-            dir_exists = None   # 用 None 标记"已跳过"
-
-    if dir_exists is not None:  # None=跳过，False/True=需要写入
-        svc_url = f"{TENCENT_FILE_URL}?tab={svc_sheet_id}"
-        sql_url = f"{TENCENT_FILE_URL}?tab={sql_sheet_id}"
-
-        write_values(DIRECTORY_SHEET_ID, [
-            make_cell(target_row, DIR_COL_PERIOD, period_short)
-        ])
-        sheetengine("set_link", {
-            "file_id": TENCENT_FILE_ID,
-            "sheet_id": DIRECTORY_SHEET_ID,
-            "row": target_row, "col": DIR_COL_SLOW_SVC,
-            "url": svc_url,
-            "display_text": svc_sheet_name
-        })
-        sheetengine("set_link", {
-            "file_id": TENCENT_FILE_ID,
-            "sheet_id": DIRECTORY_SHEET_ID,
-            "row": target_row, "col": DIR_COL_SLOW_SQL,
-            "url": sql_url,
-            "display_text": sql_sheet_name
-        })
-        print(f"  ✓ 目录第 {target_row+1} 行写入完成（含跳转链接）")
+    # ── Step 3: 固定重建目录 M1:O8 ────────────────────────────────────────────
+    print("\nStep 3: 滚动维护目录 M1:O8...")
+    directory_plan = refresh_directory_after_upload()
+    print(
+        "  ✓ 目录已更新："
+        + "、".join(row[0] for row in directory_plan.rows[2:7])
+        + "（上旧下新）"
+    )
 
     # ── Step 4: 慢服务 sheet：表头 + 全量数据 ────────────────────────────────
     print(f"\nStep 4: 写入 {svc_sheet_name}...")
