@@ -379,7 +379,7 @@ python3 "$SKILL_DIR/scripts/tencent_upload_scan_reports.py" "$WORKSPACE/<period_
 |------|------|------|
 | 1 | 检查已有 sheet | 如果同名 sheet 已存在则跳过创建 |
 | 2 | 创建两个新 sheet | `慢服务MMDD-MMDD`（index=1）和 `慢SQLMMDD-MMDD`（index=2），排在目录之后、其余 sheet 之前 |
-| 3 | 更新目录 sheet | 在下一个空行写入周期（M列）+ 两个带跳转超链接的 sheet 名称（N、O列）；链接格式：`https://docs.qq.com/sheet/DWHBzb1ZFZWhFREZa?tab={sheet_id}`，`sheet_id` 来自步骤 2 的 `add_sheet` 返回值 |
+| 3 | 滚动维护目录 | 将 `M1:O8` 重建为表头、汇总、最新五个完整周期、归档；周期按上旧下新排列，N2:O8 的链接使用当前实际 Sheet ID |
 | 4 | 写入慢服务数据 | 表头（蓝色加粗，背景 `#8CDDFA`）+ 全量数据行，分批 30 行写入 |
 | 5 | 写入慢SQL表头 | 仅写标题行（同样式），数据列含 `SQL语句` 需用户手动粘贴（API 被 WAF 拦截 SQL 关键词） |
 | 6 | 打印操作说明 | 输出腾讯文档跳转链接、粘贴位置、列顺序说明 |
@@ -397,6 +397,14 @@ python3 "$SKILL_DIR/scripts/tencent_upload_scan_reports.py" "$WORKSPACE/<period_
 ```
 
 > `链路详情` 列为 2026-06-07 本周新增，与之前格式相比多一列。
+
+### Directory navigation contract
+
+- `目录!M1:O8` is the complete navigation block. Never append weekly navigation at row 9 or below.
+- Row 1 is the header, row 2 links the two summary sheets, rows 3-7 link the latest five paired weekly periods, and row 8 links the two archive sheets.
+- Rows 3-7 are always oldest-to-newest. When a sixth paired week appears, the oldest week leaves the navigation block immediately but its source Sheets remain until `week-tencent-archive` succeeds.
+- Only exact paired names `慢服务MMDD-MMDD` and `慢SQLMMDD-MMDD` participate. Any unsafe unpaired canonical period stops the update.
+- Every refresh rebuilds and reads back all 24 values and 14 links. It must not write outside `M1:O8`.
 
 ### Known limitation: WAF blocks SQL statement upload
 
@@ -536,7 +544,7 @@ Preview first:
 python3 "$SKILL_DIR/scripts/tencent_archive_scan_reports.py"
 ```
 
-Review the archive periods, source row counts, period actions, exact source Sheet names, and directory rows. Then apply:
+Review the archive periods, source row counts, period actions, exact source Sheet names, and five-period directory preview. Then apply:
 
 ```bash
 python3 "$SKILL_DIR/scripts/tencent_archive_scan_reports.py" --apply
@@ -550,9 +558,9 @@ Archive contract:
 - Slow-SQL text is read in adaptive chunks and written with UTF-8 base64. An unreadable single row stops the command.
 - The command writes both archive sheets and re-reads every full row before deleting any source Sheet.
 - Source deletion starts only after both archives pass row-count and SHA-256 content verification.
-- After both source Sheets are confirmed absent, directory cleanup clears only M:O and the N/O links. A:L and P:Z are snapshotted and verified unchanged.
+- After source deletion is confirmed, the command rebuilds and verifies the fixed `目录!M1:O8` navigation block. It never clears or appends historical directory rows.
 - `慢SQL0525-0531（作废）` and all noncanonical sheets are never deleted.
-- The command is idempotent. Exact archive blocks are skipped; interrupted source deletion can resume when both verified archive blocks remain.
+- The command is idempotent. Exact archive blocks are skipped; interrupted source deletion can resume from a remaining single source Sheet when both verified archive blocks exist, without relying on historical directory rows.
 - Default mode is dry-run. Never add `--apply` until the preview is clean.
 
 ## Safety
