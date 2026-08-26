@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 try:
+    from scripts.directory_navigation import rebuild_directory_navigation
     from scripts.scan_archive import (
         ARCHIVE_HEADERS,
         ArchiveError,
@@ -24,6 +25,7 @@ try:
         select_archive_periods,
     )
 except ModuleNotFoundError:
+    from directory_navigation import rebuild_directory_navigation
     from scan_archive import (
         ARCHIVE_HEADERS,
         ArchiveError,
@@ -42,7 +44,6 @@ TARGETS = {
     "slow_sql": ("慢SQL归档", "8i29ez"),
 }
 SOURCE_PREFIX = {"slow_service": "慢服务", "slow_sql": "慢SQL"}
-DIRECTORY_PERIOD_COL = 12
 
 
 @dataclass(frozen=True)
@@ -61,9 +62,6 @@ class ArchivePreparation:
     current_rows: dict[str, list[list[str]]]
     sources: dict[str, dict[str, list[list[str]]]]
     source_metas: dict[str, dict[str, SheetMeta]]
-    directory_meta: SheetMeta
-    directory_rows: dict[str, int]
-    directory_sentinels: dict[str, tuple[tuple[str, ...], tuple[str, ...]]]
 
 
 def _meta(raw: dict[str, Any]) -> SheetMeta:
@@ -378,71 +376,6 @@ def verify_archive_pair(
         index_archive_blocks(actual)
 
 
-def _directory_period_rows(client, meta: SheetMeta) -> dict[str, int]:
-    values = _read_column(client, meta, DIRECTORY_PERIOD_COL)
-    result: dict[str, int] = {}
-    for offset, value in enumerate(values, start=1):
-        period = str(value).strip()
-        if not period:
-            continue
-        if period in result:
-            raise ArchiveError(f"目录中周期 {period} 出现多次")
-        result[period] = offset
-    return result
-
-
-def read_directory_sentinels(
-    client,
-    meta: SheetMeta,
-    period_rows: dict[str, int],
-) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
-    if not period_rows:
-        return {}
-    first_row = min(period_rows.values())
-    last_row = max(period_rows.values())
-    left = read_csv_adaptive(client, meta.sheet_id, first_row, last_row, 0, 11, sheet_name=meta.sheet_name)
-    right = read_csv_adaptive(client, meta.sheet_id, first_row, last_row, 15, 25, sheet_name=meta.sheet_name)
-    return {
-        period: (
-            tuple(left[row_index - first_row]),
-            tuple(right[row_index - first_row]),
-        )
-        for period, row_index in period_rows.items()
-    }
-
-
-def clear_directory_periods(
-    client,
-    meta: SheetMeta,
-    period_rows: dict[str, int],
-    snapshots: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
-) -> None:
-    for period, row_index in period_rows.items():
-        if period not in snapshots:
-            raise ArchiveError(f"目录周期 {period} 缺少清理前快照")
-        client.clear_link(meta.sheet_id, row_index, 13)
-        client.clear_link(meta.sheet_id, row_index, 14)
-        client.clear_range(
-            meta.sheet_id,
-            start_row=row_index,
-            end_row=row_index,
-            start_col=12,
-            end_col=14,
-        )
-    if not period_rows:
-        return
-    first_row = min(period_rows.values())
-    last_row = max(period_rows.values())
-    cleared = read_csv_adaptive(client, meta.sheet_id, first_row, last_row, 12, 14, sheet_name=meta.sheet_name)
-    for period, row_index in period_rows.items():
-        if any(cleared[row_index - first_row]):
-            raise ArchiveError(f"目录周期 {period} 的 M:O 未清空")
-    after = read_directory_sentinels(client, meta, period_rows)
-    for period, before in snapshots.items():
-        if after.get(period) != before:
-            raise ArchiveError(f"目录周期 {period} 同行 A:L 或 P:Z 发生变化")
-
-
 def delete_verified_sources(
     client,
     source_metas: dict[str, dict[str, SheetMeta]],
@@ -481,7 +414,6 @@ def prepare_archive(
 ) -> ArchivePreparation:
     metas = [_meta(raw) for raw in client.sheet_info()]
     by_name = {meta.sheet_name: meta for meta in metas}
-    by_id = {meta.sheet_id: meta for meta in metas}
     selection = select_archive_periods(by_name, keep_weeks=keep_weeks)
 
     target_metas: dict[str, SheetMeta] = {}
@@ -496,24 +428,18 @@ def prepare_archive(
         archive_rows[kind] = rows
         archive_blocks[kind] = index_archive_blocks(rows)
 
-    directory = by_id.get(directory_id)
-    if not directory:
-        raise ArchiveError(f"找不到目录 Sheet: {directory_id}")
-    directory_rows = _directory_period_rows(client, directory)
-
     base_periods = list(selection.archive)
     archived_in_both = set(archive_blocks["slow_service"]) & set(archive_blocks["slow_sql"])
     recovery_periods = [
         period
-        for period in archive_blocks["slow_service"]
+        for period in selection.unpaired
         if period in archived_in_both
-        and period in directory_rows
         and period not in base_periods
-        and (
-            f"慢服务{period}" not in by_name
-            or f"慢SQL{period}" not in by_name
-        )
+        and ((f"慢服务{period}" in by_name) != (f"慢SQL{period}" in by_name))
     ]
+    unsafe_unpaired = [period for period in selection.unpaired if period not in recovery_periods]
+    if unsafe_unpaired:
+        raise ArchiveError(f"存在无法从双归档恢复的非配对周期: {', '.join(unsafe_unpaired)}")
     periods = tuple(base_periods + recovery_periods)
 
     sources: dict[str, dict[str, list[list[str]]]] = {"slow_service": {}, "slow_sql": {}}
@@ -541,7 +467,7 @@ def prepare_archive(
         "slow_service": {},
         "slow_sql": {},
         "delete_sheets": [],
-        "directory_rows": {},
+        "directory_preview": list(selection.keep),
     }
     for period in periods:
         for kind in ("slow_service", "slow_sql"):
@@ -559,14 +485,6 @@ def prepare_archive(
             }
             if source_exists[kind][period]:
                 report["delete_sheets"].append(f"{SOURCE_PREFIX[kind]}{period}")
-        if period in directory_rows:
-            report["directory_rows"][period] = directory_rows[period]
-    selected_directory_rows = {
-        period: directory_rows[period]
-        for period in periods
-        if period in directory_rows
-    }
-    sentinels = read_directory_sentinels(client, directory, selected_directory_rows)
     return ArchivePreparation(
         report=report,
         periods=periods,
@@ -574,9 +492,6 @@ def prepare_archive(
         current_rows=archive_rows,
         sources=sources,
         source_metas=source_metas,
-        directory_meta=directory,
-        directory_rows=selected_directory_rows,
-        directory_sentinels=sentinels,
     )
 
 
@@ -637,13 +552,9 @@ def run_archive(
         preparation.periods,
         archives_verified=True,
     )
-    clear_directory_periods(
-        client,
-        preparation.directory_meta,
-        preparation.directory_rows,
-        preparation.directory_sentinels,
-    )
-    report["directory_cleared"] = list(preparation.directory_rows)
+    final_sheets = client.sheet_info()
+    rebuild_directory_navigation(client, final_sheets)
+    report["directory_rebuilt"] = True
     return report
 
 
@@ -702,6 +613,25 @@ class TencentArchiveClient:
             },
         ).get("csv_data", "")
 
+    def get_cells(
+        self,
+        sheet_id: str,
+        start_row: int,
+        end_row: int,
+        start_col: int,
+        end_col: int,
+    ) -> list[dict[str, Any]]:
+        return self.call(
+            "get_cell_data",
+            {
+                "sheet_id": sheet_id,
+                "start_row": start_row,
+                "end_row": end_row,
+                "start_col": start_col,
+                "end_col": end_col,
+            },
+        ).get("cells", [])
+
     def insert_dimension(self, sheet_id: str, **arguments) -> None:
         self.call("insert_dimension", {"sheet_id": sheet_id, **arguments})
 
@@ -713,6 +643,25 @@ class TencentArchiveClient:
 
     def clear_link(self, sheet_id: str, row: int, col: int) -> None:
         self.call("clear_link", {"sheet_id": sheet_id, "row": row, "col": col})
+
+    def set_link(
+        self,
+        sheet_id: str,
+        row: int,
+        col: int,
+        url: str,
+        display_text: str,
+    ) -> None:
+        self.call(
+            "set_link",
+            {
+                "sheet_id": sheet_id,
+                "row": row,
+                "col": col,
+                "url": url,
+                "display_text": display_text,
+            },
+        )
 
     def delete_sheet(self, sheet_id: str) -> None:
         self.call("delete_sheet", {"sheet_id": sheet_id})

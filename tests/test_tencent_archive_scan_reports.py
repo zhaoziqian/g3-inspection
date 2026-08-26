@@ -15,11 +15,9 @@ from scripts.tencent_archive_scan_reports import (
     TencentArchiveClient,
     apply_archive_sheet,
     build_dry_run,
-    clear_directory_periods,
     delete_verified_sources,
     make_row_cells,
     parse_args,
-    read_directory_sentinels,
     read_csv_adaptive,
     read_source_sheet,
     run_archive,
@@ -188,7 +186,7 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(report["slow_service"]["0518-0525"]["source_rows"], 1)
         self.assertEqual(report["slow_sql"]["0518-0525"]["source_rows"], 1)
         self.assertEqual(report["delete_sheets"], ["慢服务0518-0525", "慢SQL0518-0525"])
-        self.assertEqual(report["directory_rows"], {"0518-0525": 1})
+        self.assertEqual(report["directory_preview"], periods[-5:])
 
     def test_partial_deletion_is_recovered_from_verified_archive_blocks(self):
         archived_svc = ["0518-0525", "start", "end", "app", "svc", "300", "2", "", "", "", "", ""]
@@ -203,7 +201,7 @@ class DryRunTests(unittest.TestCase):
         matrices = {
             "svc-archive": [ARCHIVE_HEADERS["slow_service"], archived_svc],
             "sql-archive": [ARCHIVE_HEADERS["slow_sql"], archived_sql],
-            "directory": [[""] * 26, [""] * 12 + ["0518-0525", "慢服务0518-0525", "慢SQL0518-0525"]],
+            "directory": [[""] * 26],
             "svc-old": [SVC_HEADER, archived_svc[1:]],
         }
         for period in keep:
@@ -359,38 +357,57 @@ class DestructiveGateTests(unittest.TestCase):
         self.assertEqual(client.deleted, ["svc", "sql"])
         self.assertEqual(client.sheets, [{"sheet_id": "obsolete", "sheet_name": "慢SQL0525-0531（作废）"}])
 
-    def test_directory_cleanup_clears_only_m_to_o_and_preserves_sentinels(self):
-        row = [f"v{index}" for index in range(26)]
-        row[12:15] = ["0518-0525", "慢服务0518-0525", "慢SQL0518-0525"]
-
-        class DirectoryClient(MatrixClient):
-            def __init__(self):
-                super().__init__([], {"directory": [[""] * 26, row[:]]})
-                self.cleared_links = []
-
-            def clear_link(self, sheet_id, row, col):
-                self.cleared_links.append((sheet_id, row, col))
-
-            def clear_range(self, sheet_id, **arguments):
-                for row_index in range(arguments["start_row"], arguments["end_row"] + 1):
-                    for col in range(arguments["start_col"], arguments["end_col"] + 1):
-                        self.matrices[sheet_id][row_index][col] = ""
-
-        client = DirectoryClient()
-        meta = SheetMeta("directory", "目录", 2, 26)
-        snapshots = read_directory_sentinels(client, meta, {"0518-0525": 1})
-
-        clear_directory_periods(client, meta, {"0518-0525": 1}, snapshots)
-
-        self.assertEqual(client.cleared_links, [("directory", 1, 13), ("directory", 1, 14)])
-        self.assertEqual(client.matrices["directory"][1][12:15], ["", "", ""])
-        self.assertEqual(client.matrices["directory"][1][:12], row[:12])
-        self.assertEqual(client.matrices["directory"][1][15:], row[15:])
-
     @patch("scripts.tencent_archive_scan_reports.prepare_archive")
     @patch("scripts.tencent_archive_scan_reports.apply_archive_sheet")
     @patch("scripts.tencent_archive_scan_reports.verify_archive_pair")
-    def test_pipeline_never_deletes_when_archive_verification_fails(self, verify, apply_sheet, prepare):
+    @patch("scripts.tencent_archive_scan_reports.delete_verified_sources")
+    @patch("scripts.tencent_archive_scan_reports.rebuild_directory_navigation")
+    def test_directory_rebuild_runs_only_after_verified_source_deletion(
+        self, rebuild, delete_sources, verify, apply_sheet, prepare
+    ):
+        events = []
+        final_sheets = [
+            {"sheet_id": "BB08J2", "sheet_name": "目录", "row_count": 8, "col_count": 26},
+            {"sheet_id": "svc-a", "sheet_name": "慢服务归档", "row_count": 2, "col_count": 12},
+            {"sheet_id": "sql-a", "sheet_name": "慢SQL归档", "row_count": 2, "col_count": 12},
+        ]
+
+        class Client:
+            def sheet_info(self):
+                events.append("sheet_info")
+                return final_sheets
+
+        prepare.return_value = SimpleNamespace(
+            report={},
+            periods=("0518-0525",),
+            target_metas={
+                "slow_service": SheetMeta("svc-a", "慢服务归档", 2, 12),
+                "slow_sql": SheetMeta("sql-a", "慢SQL归档", 2, 12),
+            },
+            current_rows={"slow_service": [], "slow_sql": []},
+            sources={"slow_service": {"0518-0525": []}, "slow_sql": {"0518-0525": []}},
+            source_metas={"slow_service": {}, "slow_sql": {}},
+        )
+        apply_sheet.side_effect = [[], []]
+        verify.side_effect = lambda *args: events.append("verify")
+        delete_sources.side_effect = lambda *args, **kwargs: events.append("delete") or []
+        rebuild.side_effect = lambda *args: events.append("rebuild")
+        client = Client()
+
+        report = run_archive(client, apply=True)
+
+        self.assertLess(events.index("verify"), events.index("delete"))
+        self.assertLess(events.index("delete"), events.index("rebuild"))
+        rebuild.assert_called_once_with(client, final_sheets)
+        self.assertTrue(report["directory_rebuilt"])
+
+    @patch("scripts.tencent_archive_scan_reports.rebuild_directory_navigation")
+    @patch("scripts.tencent_archive_scan_reports.prepare_archive")
+    @patch("scripts.tencent_archive_scan_reports.apply_archive_sheet")
+    @patch("scripts.tencent_archive_scan_reports.verify_archive_pair")
+    def test_pipeline_never_deletes_when_archive_verification_fails(
+        self, verify, apply_sheet, prepare, rebuild
+    ):
         class Client:
             def __init__(self):
                 self.deleted = []
@@ -414,9 +431,6 @@ class DestructiveGateTests(unittest.TestCase):
             current_rows={"slow_service": [], "slow_sql": []},
             sources={"slow_service": {"0518-0525": []}, "slow_sql": {"0518-0525": []}},
             source_metas={"slow_service": {}, "slow_sql": {}},
-            directory_meta=SheetMeta("directory", "目录", 2, 26),
-            directory_rows={},
-            directory_sentinels={},
         )
         apply_sheet.side_effect = [[], []]
         verify.side_effect = ArchiveError("内容不一致")
@@ -426,9 +440,45 @@ class DestructiveGateTests(unittest.TestCase):
             run_archive(client, apply=True)
 
         self.assertEqual(client.deleted, [])
+        rebuild.assert_not_called()
 
 
 class TencentArchiveClientTests(unittest.TestCase):
+    def test_directory_protocol_methods_forward_structured_cells_and_links(self):
+        class RecordingClient(TencentArchiveClient):
+            def __init__(self):
+                self.calls = []
+
+            def call(self, tool, arguments):
+                self.calls.append((tool, arguments))
+                return {"cells": [{"row": 0, "col": 12, "string_value": "周期"}]}
+
+        client = RecordingClient()
+
+        cells = client.get_cells("BB08J2", 0, 7, 12, 14)
+        client.set_link("BB08J2", 1, 13, "https://docs.qq.com/sheet/id?tab=svc", "慢服务汇总")
+
+        self.assertEqual(cells, [{"row": 0, "col": 12, "string_value": "周期"}])
+        self.assertEqual(
+            client.calls,
+            [
+                ("get_cell_data", {
+                    "sheet_id": "BB08J2",
+                    "start_row": 0,
+                    "end_row": 7,
+                    "start_col": 12,
+                    "end_col": 14,
+                }),
+                ("set_link", {
+                    "sheet_id": "BB08J2",
+                    "row": 1,
+                    "col": 13,
+                    "url": "https://docs.qq.com/sheet/id?tab=svc",
+                    "display_text": "慢服务汇总",
+                }),
+            ],
+        )
+
     def test_archive_styling_tolerates_remove_filter_when_sheet_has_no_filter(self):
         class NoFilterClient(TencentArchiveClient):
             def __init__(self):
