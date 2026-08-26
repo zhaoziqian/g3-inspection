@@ -95,6 +95,19 @@ class AdaptiveReadTests(unittest.TestCase):
         with self.assertRaisesRegex(ArchiveError, "SQL语句"):
             read_source_sheet(client, SheetMeta("sql", "慢SQL0525-0531", 1, 10), "slow_sql", "0525-0531")
 
+    def test_source_reader_groups_contiguous_non_sql_columns(self):
+        row = ["start", "end", "app", "mapper", "SELECT 1", "900", "trace", "李四", "完成", "方案", "备注"]
+        client = MatrixClient([], {"sql": [SQL_HEADER, row]})
+
+        read_source_sheet(client, SheetMeta("sql", "慢SQL0518-0525", 2, 11), "slow_sql", "0518-0525")
+
+        data_reads = [read for read in client.reads if read[1] == 1]
+        self.assertEqual(data_reads, [
+            ("sql", 1, 1, 0, 3),
+            ("sql", 1, 1, 5, 10),
+            ("sql", 1, 1, 4, 4),
+        ])
+
 
 class DryRunTests(unittest.TestCase):
     def test_default_cli_mode_is_dry_run_and_keep_weeks_is_five(self):

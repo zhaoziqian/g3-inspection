@@ -128,6 +128,45 @@ def _read_column(
     return values
 
 
+def _contiguous_groups(columns: Iterable[int]) -> list[tuple[int, int]]:
+    groups: list[tuple[int, int]] = []
+    for column in sorted(set(columns)):
+        if groups and column == groups[-1][1] + 1:
+            groups[-1] = (groups[-1][0], column)
+        else:
+            groups.append((column, column))
+    return groups
+
+
+def _read_columns(
+    client,
+    meta: SheetMeta,
+    columns: Iterable[int],
+    *,
+    start_row: int = 1,
+    batch_size: int = 150,
+) -> dict[int, list[str]]:
+    requested = sorted(set(columns))
+    result = {column: [] for column in requested}
+    if meta.row_count <= start_row:
+        return result
+    for col_start, col_end in _contiguous_groups(requested):
+        for batch_start in range(start_row, meta.row_count, batch_size):
+            batch_end = min(batch_start + batch_size - 1, meta.row_count - 1)
+            rows = read_csv_adaptive(
+                client,
+                meta.sheet_id,
+                batch_start,
+                batch_end,
+                col_start,
+                col_end,
+                sheet_name=meta.sheet_name,
+            )
+            for column in range(col_start, col_end + 1):
+                result[column].extend(row[column - col_start] for row in rows)
+    return result
+
+
 def _read_header(client, meta: SheetMeta) -> list[str]:
     if meta.col_count <= 0:
         return []
@@ -140,12 +179,12 @@ def read_source_sheet(client, meta: SheetMeta, kind: str, period: str) -> list[l
     normalize_source_rows(kind, period, header, [])
     columns = {value: index for index, value in enumerate(header) if value}
     wanted = ARCHIVE_HEADERS[kind][1:]
-    raw_columns: dict[str, list[str]] = {}
-    for name in wanted:
-        if name not in columns:
-            continue
-        batch_size = 10 if kind == "slow_sql" and name == "SQL语句" else 150
-        raw_columns[name] = _read_column(client, meta, columns[name], batch_size=batch_size)
+    sql_column = columns.get("SQL语句") if kind == "slow_sql" else None
+    ordinary_indexes = [index for name, index in columns.items() if name in wanted and index != sql_column]
+    by_index = _read_columns(client, meta, ordinary_indexes)
+    if sql_column is not None:
+        by_index[sql_column] = _read_column(client, meta, sql_column, batch_size=10)
+    raw_columns = {name: by_index[index] for name, index in columns.items() if name in wanted}
     row_count = max((len(values) for values in raw_columns.values()), default=0)
     raw_rows = [
         [raw_columns.get(name, [""] * row_count)[row_index] for name in wanted]
@@ -163,12 +202,13 @@ def read_archive_sheet(client, meta: SheetMeta, kind: str) -> tuple[list[str], l
     actual = (header + [""] * len(used_header))[: len(used_header)]
     if actual != used_header:
         raise ArchiveError(f"{meta.sheet_name} 表头不匹配: {actual}")
-    columns = []
-    for column in range(len(used_header)):
-        batch_size = 10 if kind == "slow_sql" and column == 5 else 150
-        columns.append(_read_column(client, meta, column, batch_size=batch_size))
-    row_count = max((len(values) for values in columns), default=0)
-    rows = [[columns[column][row] for column in range(len(columns))] for row in range(row_count)]
+    sql_column = 5 if kind == "slow_sql" else None
+    ordinary_indexes = [column for column in range(len(used_header)) if column != sql_column]
+    columns = _read_columns(client, meta, ordinary_indexes)
+    if sql_column is not None:
+        columns[sql_column] = _read_column(client, meta, sql_column, batch_size=10)
+    row_count = max((len(values) for values in columns.values()), default=0)
+    rows = [[columns[column][row] for column in range(len(used_header))] for row in range(row_count)]
     while rows and not any(rows[-1]):
         rows.pop()
     if any(not any(row) for row in rows):
