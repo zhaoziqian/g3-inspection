@@ -128,7 +128,7 @@ def _target_sheet_id(url: str) -> str:
     return value
 
 
-def _verify_navigation(cells: Iterable[dict[str, Any]], plan: NavigationPlan) -> None:
+def _verify_navigation_text(cells: Iterable[dict[str, Any]], plan: NavigationPlan) -> None:
     by_position = {
         (int(cell["row"]), int(cell["col"])): cell
         for cell in cells
@@ -141,21 +141,33 @@ def _verify_navigation(cells: Iterable[dict[str, Any]], plan: NavigationPlan) ->
                 raise NavigationError(
                     f"目录文本校验失败: ({row}, {col}) 期望 {expected!r}，实际 {actual!r}"
                 )
-    for expected in plan.links:
-        cell = by_position.get((expected.row, expected.col), {})
-        hyperlinks = cell.get("hyperlinks") or []
-        if len(hyperlinks) != 1:
-            raise NavigationError(
-                f"目录链接校验失败: ({expected.row}, {expected.col}) 链接数量不是 1"
-            )
-        hyperlink = hyperlinks[0]
-        if (
-            str(hyperlink.get("text", "")) != expected.display_text
-            or _target_sheet_id(str(hyperlink.get("url", ""))) != expected.sheet_id
-        ):
-            raise NavigationError(
-                f"目录链接校验失败: ({expected.row}, {expected.col}) 目标不匹配"
-            )
+
+
+def _verify_navigation_link(
+    cells: Iterable[dict[str, Any]],
+    expected: NavigationLink,
+) -> None:
+    cell = next(
+        (
+            cell
+            for cell in cells
+            if (int(cell["row"]), int(cell["col"])) == (expected.row, expected.col)
+        ),
+        {},
+    )
+    hyperlinks = cell.get("hyperlinks") or []
+    if len(hyperlinks) != 1:
+        raise NavigationError(
+            f"目录链接校验失败: ({expected.row}, {expected.col}) 链接数量不是 1"
+        )
+    hyperlink = hyperlinks[0]
+    if (
+        str(hyperlink.get("text", "")) != expected.display_text
+        or _target_sheet_id(str(hyperlink.get("url", ""))) != expected.sheet_id
+    ):
+        raise NavigationError(
+            f"目录链接校验失败: ({expected.row}, {expected.col}) 目标不匹配"
+        )
 
 
 def rebuild_directory_navigation(
@@ -187,5 +199,16 @@ def rebuild_directory_navigation(
             link.display_text,
         )
     actual = client.get_cells(directory_sheet_id, 0, 7, 12, 14)
-    _verify_navigation(actual, plan)
+    _verify_navigation_text(actual, plan)
+    # Tencent Docs may shift hyperlink metadata in a multi-cell response.
+    # A single-cell read returns the link bound to that exact cell.
+    for link in plan.links:
+        actual_link = client.get_cells(
+            directory_sheet_id,
+            link.row,
+            link.row,
+            link.col,
+            link.col,
+        )
+        _verify_navigation_link(actual_link, link)
     return plan

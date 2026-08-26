@@ -89,11 +89,13 @@ class DirectoryNavigationPlanTests(unittest.TestCase):
 
 
 class NavigationClientDouble:
-    def __init__(self, *, wrong_link=False, full_url_links=False):
+    def __init__(self, *, wrong_link=False, full_url_links=False, shift_bulk_links=False):
         self.values = []
         self.links = {}
         self.wrong_link = wrong_link
         self.full_url_links = full_url_links
+        self.shift_bulk_links = shift_bulk_links
+        self.read_ranges = []
 
     def set_values(self, sheet_id, values):
         self.assert_directory(sheet_id)
@@ -106,9 +108,14 @@ class NavigationClientDouble:
 
     def get_cells(self, sheet_id, start_row, end_row, start_col, end_col):
         self.assert_directory(sheet_id)
-        self.read_range = (start_row, end_row, start_col, end_col)
+        self.read_ranges.append((start_row, end_row, start_col, end_col))
         cells = []
         for value in self.values:
+            if not (
+                start_row <= value["row"] <= end_row
+                and start_col <= value["col"] <= end_col
+            ):
+                continue
             cell = {
                 "row": value["row"],
                 "col": value["col"],
@@ -119,9 +126,15 @@ class NavigationClientDouble:
             if link:
                 cell["hyperlinks"] = [dict(link)]
             cells.append(cell)
+        if self.shift_bulk_links and (start_row != end_row or start_col != end_col):
+            for cell in cells:
+                shifted = self.links.get((cell["row"] + 1, cell["col"]))
+                if shifted:
+                    cell["hyperlinks"] = [dict(shifted)]
         if self.wrong_link:
-            target = next(cell for cell in cells if (cell["row"], cell["col"]) == (1, 13))
-            target["hyperlinks"][0]["url"] = "wrong-sheet-id"
+            for target in cells:
+                if (target["row"], target["col"]) == (1, 13):
+                    target["hyperlinks"][0]["url"] = "wrong-sheet-id"
         return cells
 
     def assert_directory(self, sheet_id):
@@ -140,7 +153,7 @@ class DirectoryNavigationWriteTests(unittest.TestCase):
             {(row, col) for row in range(8) for col in range(12, 15)},
         )
         self.assertEqual(len(client.links), 14)
-        self.assertEqual(client.read_range, (0, 7, 12, 14))
+        self.assertIn((0, 7, 12, 14), client.read_ranges)
 
     def test_verifies_full_url_link_representation(self):
         client = NavigationClientDouble(full_url_links=True)
@@ -154,6 +167,17 @@ class DirectoryNavigationWriteTests(unittest.TestCase):
 
         with self.assertRaisesRegex(NavigationError, "目录链接校验失败"):
             rebuild_directory_navigation(client, six_week_sheets())
+
+    def test_reads_links_per_cell_when_bulk_hyperlinks_are_shifted(self):
+        client = NavigationClientDouble(shift_bulk_links=True)
+
+        rebuild_directory_navigation(client, six_week_sheets())
+
+        self.assertIn((0, 7, 12, 14), client.read_ranges)
+        self.assertEqual(
+            [item for item in client.read_ranges if item[0] == item[1] and item[2] == item[3]],
+            [(row, row, col, col) for row in range(1, 8) for col in (13, 14)],
+        )
 
 
 if __name__ == "__main__":
