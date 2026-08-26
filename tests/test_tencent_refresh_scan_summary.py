@@ -5,13 +5,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.scan_summary import FIXED_HEADERS, plan_summary_update
 from scripts.tencent_refresh_scan_summary import (
     SheetMeta,
+    TencentSummaryClient,
     apply_update_plan,
     read_required_rows,
     read_summary_matrix,
+    require_nonempty_source,
     verify_applied_update,
 )
 
@@ -74,6 +77,12 @@ class TencentSummaryReaderTests(unittest.TestCase):
         result = read_summary_matrix(client, SheetMeta("summary", "慢服务汇总", 200, 26))
 
         self.assertEqual(result, [matrix[0][:7], matrix[1][:7]])
+
+    def test_empty_source_requires_explicit_override(self):
+        with self.assertRaisesRegex(Exception, "没有数据行"):
+            require_nonempty_source([], "慢SQL0824-0830", allow_empty=False)
+
+        require_nonempty_source([], "慢SQL0824-0830", allow_empty=True)
 
 
 class TencentSummaryApplyTests(unittest.TestCase):
@@ -140,6 +149,15 @@ class TencentSummaryCliTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    @patch("scripts.tencent_refresh_scan_summary.subprocess.run")
+    def test_client_rejects_business_error_json_even_with_zero_exit_code(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = '{"error":"permission denied"}'
+        run.return_value.stderr = ""
+
+        with self.assertRaisesRegex(Exception, "permission denied"):
+            TencentSummaryClient().sheet_info()
 
 
 if __name__ == "__main__":

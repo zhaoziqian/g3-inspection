@@ -120,6 +120,14 @@ class ScanSummaryPlanningTests(unittest.TestCase):
         with self.assertRaisesRegex(SummaryUpdateError, "重复唯一键"):
             plan_summary_update("slow_service", "0824-0830", [], existing)
 
+    def test_duplicate_existing_period_header_fails_loudly(self):
+        existing = [
+            [*FIXED_HEADERS["slow_service"], "0817-0823", "0817-0823"],
+        ]
+
+        with self.assertRaisesRegex(SummaryUpdateError, "重复周期"):
+            plan_summary_update("slow_service", "0817-0823", [], existing)
+
 
 if __name__ == "__main__":
     unittest.main()

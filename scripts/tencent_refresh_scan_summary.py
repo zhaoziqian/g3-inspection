@@ -99,6 +99,13 @@ def read_summary_matrix(client, meta: SheetMeta) -> list[list[str]]:
     ]
 
 
+def require_nonempty_source(rows: list[dict[str, str]], sheet_name: str, allow_empty: bool) -> None:
+    if not rows and not allow_empty:
+        raise SummaryUpdateError(
+            f"{sheet_name} 没有数据行；如已确认本周确实为零记录，使用 --allow-empty"
+        )
+
+
 def _string_cell(row: int, col: int, value: str) -> dict[str, Any]:
     return {"row": row, "col": col, "value_type": "STRING", "string_value": value}
 
@@ -208,15 +215,22 @@ class TencentSummaryClient:
             raise SummaryUpdateError(result.stderr.strip() or result.stdout.strip())
         output = result.stdout.strip()
         try:
-            return json.loads(output)
+            data = json.loads(output)
         except json.JSONDecodeError:
             start, end = output.find("{"), output.rfind("}")
             if start >= 0 and end > start:
                 try:
-                    return json.loads(output[start : end + 1])
+                    data = json.loads(output[start : end + 1])
                 except json.JSONDecodeError:
                     pass
+                else:
+                    if data.get("error"):
+                        raise SummaryUpdateError(str(data["error"]))
+                    return data
             raise SummaryUpdateError(f"sheet-mcp {tool} 返回无效 JSON: {output[:300]}") from None
+        if data.get("error"):
+            raise SummaryUpdateError(str(data["error"]))
+        return data
 
     def sheet_info(self) -> list[dict[str, Any]]:
         return self.call("get_sheet_info", {}).get("sheets", [])
@@ -284,7 +298,12 @@ def _meta(raw: dict[str, Any]) -> SheetMeta:
     return SheetMeta(str(raw["sheet_id"]), str(raw["sheet_name"]), int(raw["row_count"]), int(raw["col_count"]))
 
 
-def run_refresh(client, period: str, apply: bool = False) -> dict[str, dict[str, Any]]:
+def run_refresh(
+    client,
+    period: str,
+    apply: bool = False,
+    allow_empty: bool = False,
+) -> dict[str, dict[str, Any]]:
     if not re.fullmatch(r"\d{4}-\d{4}", period):
         raise SummaryUpdateError("周期格式必须为 MMDD-MMDD")
     by_name = {sheet["sheet_name"]: _meta(sheet) for sheet in client.sheet_info()}
@@ -300,6 +319,7 @@ def run_refresh(client, period: str, apply: bool = False) -> dict[str, dict[str,
         if not target or target.sheet_id != config["target_id"]:
             raise SummaryUpdateError(f"找不到目标汇总页或 sheet ID 不匹配: {config['target_name']}")
         current_rows = read_required_rows(client, source, kind)
+        require_nonempty_source(current_rows, source_name, allow_empty)
         existing = read_summary_matrix(client, target)
         plan = plan_summary_update(kind, period, current_rows, existing)
         plans[kind] = (target, existing, plan)
@@ -329,6 +349,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="持续更新腾讯文档慢服务/慢SQL汇总页。默认 dry-run。")
     parser.add_argument("--period", required=True, help="周期 MMDD-MMDD，例如 0824-0830")
     parser.add_argument("--apply", action="store_true", help="实际写入腾讯文档")
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="明确允许当周明细为零行（默认拒绝，防止慢SQL忘记粘贴）",
+    )
     parser.add_argument("--file-id", default=TENCENT_FILE_ID)
     return parser.parse_args(argv)
 
@@ -336,7 +361,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
-        report = run_refresh(TencentSummaryClient(args.file_id), args.period, args.apply)
+        report = run_refresh(
+            TencentSummaryClient(args.file_id),
+            args.period,
+            args.apply,
+            args.allow_empty,
+        )
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1

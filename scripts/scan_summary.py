@@ -136,6 +136,10 @@ def plan_summary_update(
     header = [str(value or "").strip() for value in existing_matrix[0]]
     if header[:6] != FIXED_HEADERS[kind]:
         raise SummaryUpdateError(f"汇总页固定表头不匹配: {header[:6]}")
+    period_headers = [value for value in header[6:] if value]
+    duplicate_periods = sorted({value for value in period_headers if period_headers.count(value) > 1})
+    if duplicate_periods:
+        raise SummaryUpdateError(f"汇总页存在重复周期: {', '.join(duplicate_periods)}")
 
     if period in header[6:]:
         insert_period = False
