@@ -490,7 +490,7 @@ class TencentArchiveClientTests(unittest.TestCase):
             TencentArchiveClient().set_values("archive", [])
 
     @patch("scripts.tencent_archive_scan_reports.subprocess.run")
-    def test_client_requests_explicit_json_output_to_avoid_large_response_truncation(self, run):
+    def test_client_requests_explicit_json_output_and_long_read_timeout(self, run):
         run.return_value.returncode = 0
         run.return_value.stdout = b'{"sheets":[]}'
         run.return_value.stderr = b""
@@ -500,6 +500,8 @@ class TencentArchiveClientTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("--output", command)
         self.assertEqual(command[command.index("--output") + 1], "json")
+        self.assertIn("--timeout", command)
+        self.assertEqual(command[command.index("--timeout") + 1], "180000")
 
 
 if __name__ == "__main__":

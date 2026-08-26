@@ -658,6 +658,7 @@ class TencentArchiveClient:
             [
                 "mcporter", "call", "sheet-mcp", tool,
                 "--output", "json",
+                "--timeout", "180000",
                 "--args", json.dumps(payload, ensure_ascii=False),
             ],
             capture_output=True,
